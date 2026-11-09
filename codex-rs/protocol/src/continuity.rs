@@ -75,6 +75,11 @@ pub fn is_verification_command(command: &[String]) -> bool {
         && matches!(shell, Some("sh" | "bash" | "zsh" | "dash" | "ksh"))
         && matches!(command[1].as_str(), "-c" | "-lc")
     {
+        // Validate the original script: tokenization would erase newline separators
+        // and could mistake a later command's exit status for the check's result.
+        if command[2].contains([';', '|', '&', '`', '$', '\n', '\r']) {
+            return false;
+        }
         command[2].split_whitespace().collect()
     } else {
         command.iter().map(String::as_str).collect()
@@ -211,6 +216,36 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn verification_detection_rejects_shell_newlines_before_tokenizing() {
+        for shell in ["sh", "bash", "zsh", "dash", "ksh", "/bin/bash"] {
+            for flag in ["-c", "-lc"] {
+                for script in [
+                    "cargo test\ntrue",
+                    "cargo test\r\ntrue",
+                    "cargo test --lib\nexit 0",
+                    "npm run typecheck\ntrue",
+                    "pytest\ntrue",
+                    "cargo test\\\n --lib",
+                ] {
+                    assert!(
+                        !is_verification_command(&[shell.into(), flag.into(), script.into()]),
+                        "must not classify {shell} {flag} {script:?} as a single check",
+                    );
+                }
+                assert!(is_verification_command(&[
+                    shell.into(),
+                    flag.into(),
+                    "cargo\ttest --lib".into(),
+                ]));
+            }
+        }
+        assert!(!is_verification_command(&[
+            "cargo".into(),
+            "test\ntrue".into()
+        ]));
     }
 
     #[test]
