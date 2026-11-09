@@ -1423,7 +1423,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(RequestPermissionsHandler);
     }
 
-    if features.enabled(Feature::TokenBudget) {
+    let clm_enabled = crate::clm::enabled(turn_context);
+    if clm_enabled {
+        registry.add(crate::tools::handlers::ContextNotesHandler);
+        registry.add(crate::tools::handlers::ContextHistoryHandler);
+    }
+    if features.enabled(Feature::TokenBudget) || clm_enabled {
         let model_messages = ResolvedModelMessages::from_model(context.model_info);
         let messages = model_messages.context_management();
         registry.add_with_exposure(

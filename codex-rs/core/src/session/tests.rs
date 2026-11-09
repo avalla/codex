@@ -4945,6 +4945,12 @@ fn success_flag_true_with_no_error_and_content_used() {
 
 async fn open_thread_persistence(session: &mut Session) -> PathBuf {
     let config = session.get_config().await;
+    let history_mode = session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .history_mode;
     let live_thread = LiveThread::create(
         Arc::clone(&session.services.thread_store),
         CreateThreadParams {
@@ -4963,7 +4969,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
             dynamic_tools: session.dynamic_tools().await.to_vec(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
-            history_mode: Default::default(),
+            history_mode,
             subagent_history_start_ordinal: None,
             history_base: None,
             initial_window_id: ContextWindowId::new_uuid_v7().to_string(),
@@ -4987,6 +4993,108 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .await
         .expect("load rollout path")
         .expect("thread should have rollout path")
+}
+
+#[tokio::test]
+async fn clm_rollover_notes_survive_checkpoint_replay_and_history_recovery() {
+    let (mut session, mut turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.features.enable(Feature::Clm).unwrap();
+        },
+    )
+    .await;
+    Arc::get_mut(&mut turn).unwrap().history_mode =
+        codex_protocol::protocol::ThreadHistoryMode::Paginated;
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .history_mode = codex_protocol::protocol::ThreadHistoryMode::Paginated;
+    let config = session.get_config().await;
+    let runtime =
+        codex_state::StateRuntime::init(config.sqlite.clone(), config.model_provider_id.clone())
+            .await
+            .unwrap();
+    Arc::get_mut(&mut session).unwrap().services.thread_store =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            Some(runtime),
+        ));
+    let path = attach_thread_persistence(Arc::get_mut(&mut session).unwrap()).await;
+    let note = crate::context::ContextualUserFragment::into(crate::clm::ContextNotes(
+        "Next: review patch; never publish.".into(),
+    ));
+    session
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            &[
+                user_message("Never publish the changes."),
+                assistant_message(&"obsolete details ".repeat(6_000)),
+                note,
+            ],
+        )
+        .await;
+    let step = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await
+        .unwrap();
+    let world = Arc::new(
+        session
+            .build_world_state_for_step(&step, true)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        crate::clm::try_rollover(
+            &session,
+            &step,
+            world,
+            codex_analytics::CompactionTrigger::Manual
+        )
+        .await
+        .unwrap()
+    );
+    session.flush_rollout().await.unwrap();
+    let InitialHistory::Resumed(resumed) =
+        RolloutRecorder::get_rollout_history(&path).await.unwrap()
+    else {
+        panic!("expected persisted rollout");
+    };
+    let checkpoint = resumed
+        .history
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(item) => item.replacement_history.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        crate::clm::notes_text(&crate::clm::latest_notes(checkpoint).unwrap().item).as_deref(),
+        Some("Next: review patch; never publish.")
+    );
+    assert!(checkpoint.iter().any(|item| matches!(&item.item, ResponseItem::Message { role, content, .. } if role == "user" && format!("{content:?}").contains("Never publish the changes."))));
+    assert!(
+        !checkpoint
+            .iter()
+            .any(|item| format!("{:?}", item.item).contains("obsolete details"))
+    );
+    // The original transcript remains in the journal, independently of the new live window.
+    assert!(resumed.history.iter().any(|item| matches!(item, RolloutItem::ResponseItem(item) if format!("{:?}", item.item).contains("obsolete details"))));
+    let replay = ContextManager::reconstruct_rollout(
+        &resumed.history,
+        Default::default(),
+        ContextManager::new(Arc::clone(&session.item_id_generator)),
+        codex_utils_output_truncation::TruncationPolicy::Tokens(10_000),
+    );
+    assert_eq!(
+        crate::clm::notes_text(&crate::clm::latest_notes(&replay.history).unwrap().item).as_deref(),
+        Some("Next: review patch; never publish.")
+    );
 }
 
 async fn attach_thread_persistence(session: &mut Session) -> PathBuf {

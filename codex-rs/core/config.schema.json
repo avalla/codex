@@ -895,6 +895,9 @@
             "cli_resume_account_check": {
               "type": "boolean"
             },
+            "clm": {
+              "type": "boolean"
+            },
             "code_mode": {
               "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
             },
@@ -7983,6 +7986,9 @@
           "type": "boolean"
         },
         "cli_resume_account_check": {
+          "type": "boolean"
+        },
+        "clm": {
           "type": "boolean"
         },
         "code_mode": {

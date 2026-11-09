@@ -22,6 +22,7 @@ use super::world_state::EnvironmentsState;
 use crate::image_preparation::ImagePreparationError;
 
 const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
+    crate::clm::ContextNotes::matches_text,
     UserInstructions::matches_text,
     EnvironmentsState::matches_text,
     AdditionalContextUserFragment::matches_text,

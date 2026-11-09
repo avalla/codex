@@ -67,6 +67,123 @@ use test_case::test_case;
 const CONFIGURED_CONTEXT_WINDOW: i64 = 128_000;
 const AUTO_COMPACT_FALLBACK_PROMPT: &str = "Save the important state before rollover.";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clm_model_manages_notes_and_rolls_over_without_summary_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let old_text = "CLM_OLD_TRANSCRIPT_ONLY ".repeat(4_000);
+    let notes = "Constraints: never publish. Completed: inspection. Next: review the patch.";
+    let mut old_message = ev_assistant_message("old-details", &old_text);
+    old_message["item"]["phase"] = json!("partial_answer");
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("clm-1"),
+                old_message,
+                ev_function_call(
+                    "save-notes",
+                    "context_notes",
+                    &json!({"text":notes}).to_string(),
+                ),
+                ev_completed("clm-1"),
+            ]),
+            sse(vec![
+                ev_response_created("clm-2"),
+                ev_function_call("rollover", "new_context", "{}"),
+                ev_completed("clm-2"),
+            ]),
+            sse(vec![
+                ev_response_created("clm-3"),
+                ev_function_call(
+                    "recover-history",
+                    "context_history",
+                    r#"{"query":"CLM_OLD_TRANSCRIPT_ONLY"}"#,
+                ),
+                ev_completed("clm-3"),
+            ]),
+            sse(vec![
+                ev_response_created("clm-4"),
+                ev_assistant_message("final", "Ready to review."),
+                ev_completed("clm-4"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_history_mode(codex_protocol::protocol::ThreadHistoryMode::Paginated)
+        .with_config(|config| {
+            config.features.enable(Feature::Clm).unwrap();
+            config.features.disable(Feature::TokenBudget).unwrap();
+            config.features.disable(Feature::AsyncCompaction).unwrap();
+            config.model_context_window = Some(128_000);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("Inspect the patch. Never publish anything.")
+        .await?;
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "CLM rollover must not call a summarization model"
+    );
+    for name in [
+        "context_notes",
+        "context_history",
+        "new_context",
+        "get_context_remaining",
+    ] {
+        assert!(
+            tool_names(&requests[0]).iter().any(|tool| tool == name),
+            "missing {name}"
+        );
+    }
+    assert!(
+        requests[1]
+            .input()
+            .iter()
+            .any(|item| item.to_string().contains("CLM_OLD_TRANSCRIPT_ONLY"))
+    );
+    let after = requests[2].input();
+    assert!(
+        !after
+            .iter()
+            .any(|item| item.to_string().contains("CLM_OLD_TRANSCRIPT_ONLY"))
+    );
+    assert!(after.iter().any(|item| item.to_string().contains(notes)));
+    assert!(
+        after
+            .iter()
+            .any(|item| item.to_string().contains("Never publish anything."))
+    );
+    assert!(
+        after
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["call_id"] == "rollover")
+    );
+    assert!(
+        after
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["call_id"] == "rollover")
+    );
+    assert!(
+        requests[3]
+            .input()
+            .iter()
+            .any(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "recover-history"
+                && item.to_string().contains("CLM_OLD_TRANSCRIPT_ONLY")),
+        "original messages must remain searchable after rollover: {:?}",
+        requests[3]
+            .input()
+            .iter()
+            .filter(|item| item["call_id"] == "recover-history")
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 fn model_token_budget_config() -> ModelTokenBudgetConfig {
     ModelTokenBudgetConfig {
         enabled: false,

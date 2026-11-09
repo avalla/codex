@@ -48,3 +48,9 @@ Set `diagnostics_on_edit` to `true` to request diagnostics after successful
 `apply_patch` edits to matching files. The setting defaults to `false`.
 See [Session continuity](session-continuity-implementation.md#language-server-requests)
 for supported requests and limits.
+
+## Model-managed context in this fork
+
+Set `[features] clm = true` to enable local working notes, model-requested context
+windows, and retrieval of this thread's persisted transcript. See
+[CLM mode](clm.md) for configuration, tool behavior, persistence and fallback rules.

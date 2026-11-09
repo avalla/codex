@@ -242,6 +242,11 @@ impl Session {
             .as_ref()
             .and_then(|config| config.guidance_message.as_deref())
             .filter(|_| token_budget_enabled);
+        let guidance = if crate::clm::enabled(turn_context) {
+            Some(crate::clm::GUIDANCE)
+        } else {
+            guidance
+        };
         world_state.add_section(ContextWindowGuidanceState::new(guidance));
         let realtime = &step_context.realtime;
         world_state.add_section(RealtimeState::new(

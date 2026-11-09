@@ -461,6 +461,8 @@ pub enum Feature {
     Goals,
     /// Add current context-window metadata to model-visible context.
     TokenBudget,
+    /// Local model-managed notes and recoverable context windows.
+    Clm,
     /// Enables experimental context management.
     ContextManagement,
     /// Track and report a shared token budget across a session's agent threads.
@@ -2215,6 +2217,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ContextManagement,
         key: "context_management",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::Clm,
+        key: "clm",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

@@ -62,7 +62,17 @@ impl SessionTask for CompactTask {
             crate::compact::run_compact_task(session, step_context, world_state, input).await?;
             return Ok(None);
         }
-        if ctx.config.features.enabled(Feature::TokenBudget) {
+        if crate::clm::try_rollover(
+            &session,
+            &step_context,
+            Arc::clone(&world_state),
+            codex_analytics::CompactionTrigger::Manual,
+        )
+        .await?
+        {
+            return Ok(None);
+        }
+        if ctx.config.features.enabled(Feature::TokenBudget) && !crate::clm::enabled(&ctx) {
             crate::compact_token_budget::run_manual_compact_task(
                 session,
                 step_context,

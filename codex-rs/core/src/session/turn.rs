@@ -639,6 +639,7 @@ pub(crate) async fn run_turn(
                 .await;
 
             // Construct the input that we will send to the model.
+            crate::clm::maybe_remind(&sess, &turn_context).await;
             let sampling_request_input = sess
                 .clone_history()
                 .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
@@ -1707,7 +1708,19 @@ async fn run_auto_compact(
         conversation.id = %sess.thread_id,
         turn.id = %turn_context.sub_id,
     );
-    if turn_context.config.features.enabled(Feature::TokenBudget) {
+    if crate::clm::try_rollover(
+        sess,
+        &replacement_step_context,
+        Arc::clone(&world_state),
+        codex_analytics::CompactionTrigger::Auto,
+    )
+    .await?
+    {
+        return Ok(true);
+    }
+    if turn_context.config.features.enabled(Feature::TokenBudget)
+        && !crate::clm::enabled(turn_context)
+    {
         // Compaction is the reset request, so force a new context window
         // instead of consuming a pending `new_context` tool request.
         crate::compact_token_budget::run_inline_auto_compact_task(
