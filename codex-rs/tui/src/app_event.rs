@@ -1067,6 +1067,7 @@ pub(crate) enum AppEvent {
     },
 
     /// Fetch plugin marketplace state for the provided working directory.
+    ReloadPlugins,
     FetchPluginsList {
         cwd: PathBuf,
     },

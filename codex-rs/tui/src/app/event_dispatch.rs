@@ -1665,6 +1665,19 @@ impl App {
             AppEvent::PluginInstallAuthAbandon => {
                 self.chat_widget.abandon_plugin_install_auth_flow();
             }
+            AppEvent::ReloadPlugins => {
+                match app_server.reload_user_config().await {
+                    Ok(()) => {
+                        self.chat_widget.refresh_plugin_mentions();
+                        self.chat_widget.refresh_connector_mentions(/*force_refresh*/ true);
+                        self.chat_widget.add_info_message(
+                            "Plugin reload requested. Updated skills, hooks, and MCP tools will be used by subsequent turns.".to_string(),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!("Failed to reload plugins: {err}")),
+                }
+            }
             AppEvent::FetchPluginsList { cwd } => {
                 self.fetch_plugins_list(app_server, cwd);
             }

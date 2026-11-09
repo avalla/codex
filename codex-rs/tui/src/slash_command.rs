@@ -163,7 +163,9 @@ impl SlashCommand {
             SlashCommand::Memories => "configure memory use and generation",
             SlashCommand::Mcp => "list MCP tools; use /mcp verbose or /mcp login <name>",
             SlashCommand::Apps => "manage apps",
-            SlashCommand::Plugins => "browse plugins",
+            SlashCommand::Plugins => {
+                "browse plugins; use /plugins reload to reload installed plugins"
+            }
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -197,6 +199,7 @@ impl SlashCommand {
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Export
+                | SlashCommand::Plugins
                 | SlashCommand::Raw
                 | SlashCommand::Cd
                 | SlashCommand::Pwd

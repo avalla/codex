@@ -2,6 +2,15 @@
 
 For an overview of Codex CLI slash commands, see [this documentation](https://developers.openai.com/codex/cli/slash-commands).
 
+## Reloading plugins in this fork
+
+Use `/plugins reload` after changing installed plugin files or configuration.
+It clears plugin and skill caches and reloads user configuration for loaded
+threads, including hooks and MCP runtimes. Changes apply to subsequent turns;
+an active turn keeps its captured configuration. Plugin and connector suggestions
+are refreshed after the reload request succeeds. This does not download plugin
+updates. Use `/plugins` to browse installed plugins.
+
 ## Session continuity in this fork
 
 | Command      | What it does                                                                                                                                      |

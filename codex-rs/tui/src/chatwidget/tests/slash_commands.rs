@@ -3001,6 +3001,34 @@ async fn slash_memory_maintenance_reports_stubbed_feature() {
 }
 
 #[tokio::test]
+async fn slash_plugins_reload_requests_runtime_refresh() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/plugins reload");
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ReloadPlugins));
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn slash_plugins_rejects_unknown_reload_argument() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/plugins invalid");
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
+    match rx.try_recv().expect("usage error") {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            assert!(rendered.contains("Usage: /plugins [reload]"));
+        }
+        other => panic!("expected usage error, got {other:?}"),
+    }
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn slash_mcp_requests_inventory_via_app_server() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();

@@ -905,6 +905,13 @@ impl ChatWidget {
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
             }
+            SlashCommand::Plugins => {
+                if trimmed.eq_ignore_ascii_case("reload") {
+                    self.app_event_tx.send(AppEvent::ReloadPlugins);
+                } else {
+                    self.add_error_message("Usage: /plugins [reload]".to_string());
+                }
+            }
             SlashCommand::Mcp => {
                 if trimmed.eq_ignore_ascii_case("verbose") {
                     self.add_mcp_output(McpServerStatusDetail::Full);
