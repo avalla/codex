@@ -178,6 +178,16 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
         let started_at = Instant::now();
         let fs = req.turn_environment.environment().get_filesystem();
         let sandbox = Self::file_system_sandbox_context_for_attempt(req, attempt);
+        let follow_symlinks = attempt.sandbox_requested
+            || !attempt.manager.should_sandbox(
+                attempt.permissions,
+                self.sandbox_preference(),
+                attempt.enforce_managed_network,
+            );
+        req.action
+            .validate_file_versions(fs.as_ref(), follow_symlinks, sandbox.as_ref())
+            .await
+            .map_err(|error| ToolError::Rejected(error.to_string()))?;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let result = codex_apply_patch::apply_patch_with_options(

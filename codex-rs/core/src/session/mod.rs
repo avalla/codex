@@ -264,6 +264,7 @@ mod handlers;
 pub(crate) mod inject;
 mod reasoning_effort;
 mod submission;
+mod verification;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
 mod input_queue;
@@ -2693,6 +2694,9 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, mut msg: EventMsg) {
+        if matches!(&msg, EventMsg::TurnComplete(_)) {
+            self.persist_context_inspection(turn_context).await;
+        }
         if let Some((item_id, started_at_ms)) = msg.command_approval_start() {
             // The client can see the command before execution. Keep its first start
             // for the canonical lifecycle events that will be saved in history.
@@ -2947,6 +2951,9 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        if persist {
+            self.observe_verification(&event.msg).await;
+        }
         let flush_guardian_completion = persist
             && matches!(event.msg, EventMsg::TurnComplete(_))
             && self.is_private_guardian_reviewer().await;

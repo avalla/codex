@@ -33,6 +33,22 @@ use uuid::Uuid;
 const STRUCTURED_TURN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 const STRUCTURED_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 
+pub(crate) struct TemporaryStructuredTurnOptions {
+    pub(crate) effort: Option<ReasoningEffort>,
+    pub(crate) timeout: Duration,
+    pub(crate) max_response_bytes: usize,
+}
+
+impl Default for TemporaryStructuredTurnOptions {
+    fn default() -> Self {
+        Self {
+            effort: None,
+            timeout: STRUCTURED_TURN_TIMEOUT,
+            max_response_bytes: STRUCTURED_RESPONSE_MAX_BYTES,
+        }
+    }
+}
+
 /// Preserve the visible thread's provider, permissions, and external-tool isolation.
 pub(crate) struct TemporaryStructuredThreadOptions {
     pub(crate) thread_source: ThreadSource,
@@ -210,6 +226,7 @@ pub(crate) async fn start_structured_turn(
 pub(crate) async fn collect_structured_response(
     mut notifications: UnboundedReceiver<ServerNotification>,
     turn_id: &str,
+    max_response_bytes: usize,
 ) -> color_eyre::Result<String> {
     let mut response = None;
 
@@ -217,9 +234,9 @@ pub(crate) async fn collect_structured_response(
         match notification {
             ServerNotification::ItemCompleted(completed) if completed.turn_id == turn_id => {
                 if let ThreadItemPayload::AgentMessage { text, .. } = completed.item.payload {
-                    if text.len() > STRUCTURED_RESPONSE_MAX_BYTES {
+                    if text.len() > max_response_bytes {
                         return Err(eyre!(
-                            "temporary structured response exceeds {STRUCTURED_RESPONSE_MAX_BYTES} bytes"
+                            "temporary structured response exceeds {max_response_bytes} bytes"
                         ));
                     }
                     response = Some(text);
@@ -281,12 +298,12 @@ pub(crate) async fn run_temporary_structured_turn(
     thread_id: String,
     prompt: String,
     output_schema: Value,
-    effort: Option<ReasoningEffort>,
+    options: TemporaryStructuredTurnOptions,
     notifications: UnboundedReceiver<ServerNotification>,
     cancellation: CancellationToken,
 ) -> color_eyre::Result<String> {
     let mut turn_id = None;
-    let result = tokio::time::timeout(STRUCTURED_TURN_TIMEOUT, async {
+    let result = tokio::time::timeout(options.timeout, async {
         if cancellation.is_cancelled() {
             return Err(eyre!("temporary structured turn cancelled"));
         }
@@ -297,7 +314,7 @@ pub(crate) async fn run_temporary_structured_turn(
             thread_id.clone(),
             prompt,
             output_schema,
-            effort,
+            options.effort,
         )
         .await?;
 
@@ -305,7 +322,7 @@ pub(crate) async fn run_temporary_structured_turn(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err(eyre!("temporary structured turn cancelled")),
-            result = collect_structured_response(notifications, &turn.turn.id) => result,
+            result = collect_structured_response(notifications, &turn.turn.id, options.max_response_bytes) => result,
         }
     })
     .await

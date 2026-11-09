@@ -977,6 +977,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attachment_indexes_a_materialized_legacy_thread_before_its_first_turn() {
+        let home = TempDir::new().unwrap();
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .unwrap();
+        let store = LocalThreadStore::new(config, Some(runtime));
+        let thread_id = ThreadId::default();
+        let mut params = create_thread_params(thread_id);
+        params.history_mode = ThreadHistoryMode::Legacy;
+        store.create_thread(params).await.unwrap();
+        store
+            .persist_thread(thread_id, PersistContext::Standard)
+            .await
+            .unwrap();
+        store
+            .add_thread_attachment(crate::AddThreadAttachmentParams {
+                thread_id,
+                attachment_type: "codex.handoff.v1".into(),
+                identity_key: "source".into(),
+                payload: serde_json::json!({"schema_version": 1}),
+            })
+            .await
+            .unwrap();
+        let page = store
+            .list_thread_attachments(crate::ListThreadAttachmentsParams {
+                thread_id,
+                cursor: None,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.attachments.len(), 1);
+    }
+
+    #[tokio::test]
     async fn raw_append_items_does_not_update_sqlite_metadata() {
         // This pins the ThreadStore contract: raw appends are history-only. Callers that need
         // metadata updates must use LiveThread or call update_thread_metadata explicitly.

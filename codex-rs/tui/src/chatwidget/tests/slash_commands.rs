@@ -230,6 +230,25 @@ async fn slash_recap_requests_generation_for_current_thread() {
 }
 
 #[tokio::test]
+async fn slash_handoff_requests_generation_only_for_an_idle_thread() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    chat.dispatch_command(SlashCommand::Handoff);
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::Handoff { thread_id: requested }) if requested == thread_id
+    );
+
+    handle_turn_started(&mut chat, "turn-1");
+    chat.dispatch_command(SlashCommand::Handoff);
+    while let Ok(event) = rx.try_recv() {
+        assert!(!matches!(event, AppEvent::Handoff { .. }));
+    }
+}
+
+#[tokio::test]
 async fn queued_slash_compact_dispatches_after_active_turn() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -3920,4 +3939,49 @@ async fn owned_copy_guard_defers_queued_input_until_released() {
         chat.maybe_send_next_queued_input();
         assert!(chat.input_queue.queued_user_messages.is_empty());
     }
+}
+
+#[tokio::test]
+async fn continuity_commands_route_to_the_current_thread() {
+    let (mut chat, mut events, _ops) = make_chatwidget_manual(None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    for command in [
+        SlashCommand::Checks,
+        SlashCommand::Context,
+        SlashCommand::Timeline,
+    ] {
+        while events.try_recv().is_ok() {}
+        chat.dispatch_command(command);
+        assert!(std::iter::from_fn(|| events.try_recv().ok()).any(
+            |event| matches!(event, AppEvent::ShowContinuity { thread_id: id, view }
+                if id == thread_id && view == command)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn continuity_compact_retention_validates_and_routes_argument() {
+    let (mut chat, mut events, _ops) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.codex_op_target = CodexOpTarget::AppEvent;
+    for argument in ["0", "101", "invalid"] {
+        while events.try_recv().is_ok() {}
+        chat.dispatch_command_with_args(SlashCommand::Compact, argument.into(), Vec::new());
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+                event,
+                AppEvent::CodexOp(AppCommand::CompactWithRetention { .. })
+            ))
+        );
+    }
+    chat.dispatch_command_with_args(SlashCommand::Compact, "2".into(), Vec::new());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::CodexOp(AppCommand::CompactWithRetention {
+                keep_recent_turns: 2
+            })
+        ))
+    );
 }

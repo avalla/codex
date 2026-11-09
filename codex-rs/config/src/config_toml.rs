@@ -162,6 +162,17 @@ pub struct FeatureToggleToml {
     pub enabled: Option<bool>,
 }
 
+/// An explicitly configured stdio language server. Executed under session permissions.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LanguageServerConfig {
+    pub command: Vec<String>,
+    pub language_id: String,
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub diagnostics_on_edit: bool,
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -278,6 +289,9 @@ pub struct ConfigToml {
 
     /// Compact prompt used for history compaction.
     pub compact_prompt: Option<String>,
+    /// Explicit language-server commands, keyed by a user-selected name.
+    #[serde(default)]
+    pub language_servers: std::collections::BTreeMap<String, LanguageServerConfig>,
 
     /// When set, restricts ChatGPT login to one or more workspace identifiers.
     #[serde(default)]

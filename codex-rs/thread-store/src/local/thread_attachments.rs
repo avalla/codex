@@ -41,6 +41,20 @@ pub(super) async fn add_thread_attachment(
         .live_writer_locks
         .reserve_lifecycle(params.thread_id)
         .await;
+    // A legacy writer can have durable JSONL before its SQLite projection exists.
+    // Attachment creation needs the parent row immediately, so index its canonical
+    // creation record under the same lifecycle reservation. Never index a deferred
+    // (unpersisted) thread merely because it has an attachment request.
+    if state_db
+        .get_thread(params.thread_id)
+        .await
+        .map_err(|error| attachment_error("read", Some(params.thread_id), error))?
+        .is_none()
+        && let Ok(path) = store.live_rollout_path(params.thread_id).await
+        && codex_rollout::existing_rollout_path(&path).await.is_some()
+    {
+        super::live_writer::index_attached_thread(store, state_db, &path).await?;
+    }
     state_db
         .add_thread_attachment(
             params.thread_id,

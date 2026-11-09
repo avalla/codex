@@ -361,15 +361,29 @@ impl ChatWidget {
                 self.input_queue.user_turn_pending_start = true;
                 self.app_event_tx.compact();
             }
-            SlashCommand::Recap => {
+            SlashCommand::Checks | SlashCommand::Context | SlashCommand::Timeline => {
+                if let Some(thread_id) = self.thread_id {
+                    self.app_event_tx.send(AppEvent::ShowContinuity {
+                        thread_id,
+                        view: cmd,
+                    });
+                } else {
+                    self.add_error_message("Session is still starting.".to_string());
+                }
+            }
+            SlashCommand::Recap | SlashCommand::Handoff => {
                 let Some(thread_id) = self.thread_id else {
-                    self.add_error_message(
-                        "Session is still starting; try /recap again in a moment.".to_string(),
-                    );
+                    self.add_error_message(format!(
+                        "Session is still starting; try /{} again in a moment.",
+                        cmd.command()
+                    ));
                     return;
                 };
-                self.app_event_tx
-                    .send(AppEvent::GenerateRecap { thread_id });
+                self.app_event_tx.send(if cmd == SlashCommand::Handoff {
+                    AppEvent::Handoff { thread_id }
+                } else {
+                    AppEvent::GenerateRecap { thread_id }
+                });
             }
             SlashCommand::Review => {
                 self.open_review_popup();
@@ -816,6 +830,22 @@ impl ChatWidget {
             SlashCommand::Model if !trimmed.is_empty() => {
                 self.handle_model_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            }
+            SlashCommand::Compact => {
+                let Ok(keep_recent_turns) = trimmed.parse::<u32>() else {
+                    self.add_error_message(
+                        "Usage: /compact [recent turns to keep, 1–100]".to_string(),
+                    );
+                    return;
+                };
+                if !(1..=100).contains(&keep_recent_turns) || self.blocks_direct_input {
+                    self.add_error_message(
+                        "Selective compact requires 1–100 retained turns and an editable session."
+                            .to_string(),
+                    );
+                    return;
+                }
+                self.submit_op(AppCommand::CompactWithRetention { keep_recent_turns });
             }
             SlashCommand::Title => {
                 self.handle_terminal_title_command_args(trimmed);
@@ -1300,6 +1330,9 @@ impl ChatWidget {
         }
         match cmd {
             SlashCommand::Ide
+            | SlashCommand::Checks
+            | SlashCommand::Context
+            | SlashCommand::Timeline
             | SlashCommand::Status
             | SlashCommand::Daemon
             | SlashCommand::Pwd
@@ -1345,6 +1378,7 @@ impl ChatWidget {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Handoff
             | SlashCommand::Review
             | SlashCommand::Model
             | SlashCommand::Presets

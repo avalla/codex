@@ -1594,6 +1594,146 @@ impl AppServerSession {
             .wrap_err("failed to list loaded threads from app server")
     }
 
+    pub(crate) async fn continuity_attachments(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<Vec<codex_app_server_protocol::ThreadAttachment>> {
+        let mut data = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request_id = self.next_request_id();
+            let response: codex_app_server_protocol::ThreadAttachmentListResponse = self
+                .request_handle
+                .request_typed(ClientRequest::ThreadAttachmentList {
+                    request_id,
+                    params: codex_app_server_protocol::ThreadAttachmentListParams {
+                        thread_id: thread_id.to_string(),
+                        cursor,
+                        limit: Some(100),
+                    },
+                })
+                .await?;
+            data.extend(response.data);
+            cursor = response.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            if data.len() > 1000 {
+                color_eyre::eyre::bail!("too many continuity attachments");
+            }
+        }
+        Ok(data)
+    }
+
+    pub(crate) async fn handoff_owners(&mut self, identity: &str) -> Result<Vec<String>> {
+        let request_id = self.next_request_id();
+        let response: codex_app_server_protocol::ThreadAttachmentOwnerListResponse = self
+            .request_handle
+            .request_typed(ClientRequest::ThreadAttachmentOwnerList {
+                request_id,
+                params: codex_app_server_protocol::ThreadAttachmentOwnerListParams {
+                    attachment_type: codex_protocol::continuity::HANDOFF_ATTACHMENT_TYPE
+                        .to_string(),
+                    identity_key: identity.to_string(),
+                    archived: None,
+                    cursor: None,
+                    limit: Some(100),
+                },
+            })
+            .await?;
+        Ok(response
+            .data
+            .into_iter()
+            .map(|owner| owner.thread_id)
+            .collect())
+    }
+
+    pub(crate) async fn capture_handoff_evidence(
+        &mut self,
+        record: &mut codex_protocol::continuity::HandoffRecord,
+    ) -> Result<()> {
+        use codex_protocol::continuity::{VERIFICATION_ATTACHMENT_TYPE, VerificationRecord};
+        let mut evidence = self
+            .continuity_attachments(record.source_thread_id)
+            .await?
+            .into_iter()
+            .filter(|attachment| attachment.attachment_type == VERIFICATION_ATTACHMENT_TYPE)
+            .filter_map(|attachment| {
+                serde_json::from_value::<VerificationRecord>(attachment.payload).ok()
+            })
+            .filter(|entry| entry.schema_version == 1)
+            .collect::<Vec<_>>();
+        evidence.sort_by_key(|entry| std::cmp::Reverse(entry.completed_at_ms));
+        record.verification_evidence.clear();
+        for entry in evidence.into_iter().take(5) {
+            record.verification_evidence.push(entry);
+            if serde_json::to_vec(&record.verification_evidence)?.len() > 16_000 {
+                record.verification_evidence.pop();
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn save_handoff_record(
+        &mut self,
+        record: &codex_protocol::continuity::HandoffRecord,
+    ) -> Result<()> {
+        record
+            .validate()
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
+        self.save_continuity_attachment(
+            record.source_thread_id,
+            &record.id,
+            serde_json::to_value(record)?,
+        )
+        .await
+    }
+
+    pub(crate) async fn save_handoff_link(
+        &mut self,
+        destination: ThreadId,
+        record: &codex_protocol::continuity::HandoffRecord,
+    ) -> Result<()> {
+        self.save_continuity_attachment(
+            destination,
+            &record.id,
+            serde_json::json!({
+                "schema_version": 1,
+                "source_thread_id": record.source_thread_id,
+                "handoff_id": record.id,
+            }),
+        )
+        .await
+    }
+
+    async fn save_continuity_attachment(
+        &mut self,
+        thread_id: ThreadId,
+        identity_key: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let response: codex_app_server_protocol::ThreadAttachmentAddResponse = self
+            .request_handle
+            .request_typed(ClientRequest::ThreadAttachmentAdd {
+                request_id,
+                params: codex_app_server_protocol::ThreadAttachmentAddParams {
+                    thread_id: thread_id.to_string(),
+                    attachment_type: codex_protocol::continuity::HANDOFF_ATTACHMENT_TYPE
+                        .to_string(),
+                    identity_key: identity_key.to_string(),
+                    payload: payload.clone(),
+                },
+            })
+            .await
+            .wrap_err("failed to persist handoff attachment")?;
+        if response.attachment.payload != payload {
+            color_eyre::eyre::bail!("handoff identity already exists with different content");
+        }
+        Ok(())
+    }
+
     pub(crate) async fn thread_read(
         &mut self,
         thread_id: ThreadId,
@@ -2038,7 +2178,11 @@ impl AppServerSession {
         Ok(())
     }
 
-    pub(crate) async fn thread_compact_start(&mut self, thread_id: ThreadId) -> Result<()> {
+    pub(crate) async fn thread_compact_start(
+        &mut self,
+        thread_id: ThreadId,
+        keep_recent_turns: Option<u32>,
+    ) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadCompactStartResponse = self
             .request_handle
@@ -2046,6 +2190,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadCompactStartParams {
                     thread_id: thread_id.to_string(),
+                    keep_recent_turns,
                 },
             })
             .await

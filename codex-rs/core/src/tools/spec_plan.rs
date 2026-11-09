@@ -1342,6 +1342,18 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     let turn_context = context.turn_context;
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.environments);
+    if !turn_context.config.language_servers.is_empty()
+        && !turn_context.root_capabilities_restricted
+    {
+        registry.add(crate::tools::handlers::LanguageServerHandler {
+            server_names: turn_context
+                .config
+                .language_servers
+                .keys()
+                .cloned()
+                .collect(),
+        });
+    }
 
     if turn_context.config.update_plan_enabled {
         registry.add(PlanHandler);

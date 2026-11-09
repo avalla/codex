@@ -50,6 +50,18 @@ impl SessionTask for CompactTask {
                 .build_world_state_for_step(&step_context, /*new_window*/ true)
                 .await?,
         );
+        if ctx
+            .extension_data
+            .get::<crate::compact::SelectiveCompaction>()
+            .is_some()
+        {
+            let input = vec![UserInput::Text {
+                text: crate::compact::SUMMARIZATION_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }];
+            crate::compact::run_compact_task(session, step_context, world_state, input).await?;
+            return Ok(None);
+        }
         if ctx.config.features.enabled(Feature::TokenBudget) {
             crate::compact_token_budget::run_manual_compact_task(
                 session,

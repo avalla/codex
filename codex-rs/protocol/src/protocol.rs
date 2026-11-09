@@ -898,6 +898,8 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+    /// Summarize only the older prefix, retaining complete recent user turns.
+    CompactWithRetention { keep_recent_turns: u32 },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -1137,6 +1139,7 @@ impl Op {
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
+            Self::CompactWithRetention { .. } => "compact_with_retention",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",

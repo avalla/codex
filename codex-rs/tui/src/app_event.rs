@@ -276,6 +276,7 @@ pub(crate) enum ThreadTitleDestination {
 pub(crate) enum RecapTrigger {
     Automatic,
     Manual,
+    Handoff,
 }
 
 #[derive(Debug)]
@@ -1888,6 +1889,15 @@ pub(crate) enum AppEvent {
 
     /// Generate a recap for the displayed idle thread at the user's request.
     GenerateRecap {
+        thread_id: ThreadId,
+    },
+
+    /// Summarize the displayed idle thread and continue in a fresh chat.
+    ShowContinuity {
+        thread_id: ThreadId,
+        view: crate::slash_command::SlashCommand,
+    },
+    Handoff {
         thread_id: ThreadId,
     },
 

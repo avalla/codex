@@ -11,6 +11,7 @@ use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::ThreadSettingsOwner;
 use crate::temporary_structured_request::TemporaryStructuredThreadOptions;
+use crate::temporary_structured_request::TemporaryStructuredTurnOptions;
 use crate::temporary_structured_request::run_temporary_structured_turn;
 use crate::temporary_structured_request::start_temporary_thread;
 use crate::temporary_structured_request::unsubscribe_temporary_thread;
@@ -184,7 +185,10 @@ impl App {
                 temporary_thread_id_text,
                 prompt,
                 thread_title_output_schema(),
-                effort,
+                TemporaryStructuredTurnOptions {
+                    effort,
+                    ..Default::default()
+                },
                 receiver,
                 cancellation.clone(),
             )
