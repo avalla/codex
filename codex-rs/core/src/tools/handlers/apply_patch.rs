@@ -620,7 +620,63 @@ async fn execute_prepared_patch(
         &tool_ctx.call_id,
         tracker,
     );
-    emitter.finish(event_ctx, result, delta.as_ref()).await
+    let mut summary = emitter.finish(event_ctx, result, delta.as_ref()).await?;
+    if !tool_ctx.step_context.turn.root_capabilities_restricted
+        && !tool_ctx
+            .step_context
+            .turn
+            .config
+            .language_servers
+            .is_empty()
+    {
+        // One bounded diagnostics batch per patch, after its edits have committed.
+        let diagnostics = async {
+            let mut reports = String::new();
+            for path in request.file_paths.iter().take(10) {
+                let extension = path
+                    .basename()
+                    .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()));
+                for (name, server) in &tool_ctx.step_context.turn.config.language_servers {
+                    if !server.diagnostics_on_edit
+                        || !extension
+                            .as_ref()
+                            .is_some_and(|ext| server.extensions.contains(ext))
+                    {
+                        continue;
+                    }
+                    let result = crate::language_server::query(
+                        &tool_ctx.session,
+                        &tool_ctx.step_context.turn,
+                        &request.turn_environment,
+                        server,
+                        path,
+                        "diagnostics",
+                        0,
+                        0,
+                        None,
+                    )
+                    .await;
+                    let report = match result {
+                        Ok(value) => value.to_string(),
+                        Err(error) => format!("unavailable: {error}"),
+                    };
+                    reports.push_str(&format!(
+                        "\nLSP {name} (not a test): {}\n",
+                        report.chars().take(8000).collect::<String>()
+                    ));
+                    if reports.len() > 24_000 {
+                        return reports;
+                    }
+                }
+            }
+            reports
+        };
+        match tokio::time::timeout(Duration::from_secs(20), diagnostics).await {
+            Ok(reports) => summary.push_str(&reports),
+            Err(_) => summary.push_str("\nLSP diagnostics timed out; patch edits remain applied."),
+        }
+    }
+    Ok(summary)
 }
 
 fn require_environment_id(

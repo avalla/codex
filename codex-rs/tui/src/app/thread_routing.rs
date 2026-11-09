@@ -837,7 +837,13 @@ impl App {
                 Ok(true)
             }
             AppCommand::Compact => {
-                app_server.thread_compact_start(thread_id).await?;
+                app_server.thread_compact_start(thread_id, None).await?;
+                Ok(true)
+            }
+            AppCommand::CompactWithRetention { keep_recent_turns } => {
+                app_server
+                    .thread_compact_start(thread_id, Some(*keep_recent_turns))
+                    .await?;
                 Ok(true)
             }
             AppCommand::SetThreadName { name } => {

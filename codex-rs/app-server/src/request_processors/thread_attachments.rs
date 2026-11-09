@@ -55,6 +55,17 @@ impl ThreadRequestProcessor {
         }
 
         let thread_id = parse_attachment_thread_id(&params.thread_id)?;
+        // A newly started persistent thread has no stored row until materialized.
+        // Saving an attachment is itself an explicit persistence request (for
+        // example, a handoff link saved before the first continuation turn).
+        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await
+            && !thread.config_snapshot().await.ephemeral
+        {
+            self.thread_store
+                .persist_thread(thread_id, codex_thread_store::PersistContext::Standard)
+                .await
+                .map_err(|error| thread_attachment_store_error(OPERATION, error))?;
+        }
         let result = self
             .thread_store
             .add_thread_attachment(AddThreadAttachmentParams {

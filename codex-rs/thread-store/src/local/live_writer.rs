@@ -269,7 +269,7 @@ pub(super) async fn discard_thread(
         .map_err(thread_store_io_error)
 }
 
-async fn index_attached_thread(
+pub(super) async fn index_attached_thread(
     store: &LocalThreadStore,
     state: &codex_state::StateRuntime,
     path: &std::path::Path,

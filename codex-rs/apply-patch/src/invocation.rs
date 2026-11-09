@@ -194,6 +194,7 @@ async fn try_verify_apply_patch_args(
         .transpose()?
         .unwrap_or_else(|| cwd.clone());
     let mut changes = HashMap::new();
+    let mut expected_contents = HashMap::new();
     for hunk in hunks {
         let path = hunk.resolve_path(&effective_cwd)?;
         if changes.contains_key(&path) {
@@ -205,6 +206,10 @@ async fn try_verify_apply_patch_args(
         }
         match hunk {
             Hunk::AddFile { contents, .. } => {
+                expected_contents.insert(
+                    path.clone(),
+                    crate::read_file_version(fs, &path, true, sandbox).await?,
+                );
                 changes.insert(path, ApplyPatchFileChange::Add { content: contents });
             }
             Hunk::DeleteFile { .. } => {
@@ -220,6 +225,7 @@ async fn try_verify_apply_patch_args(
                             source,
                         })
                     })?;
+                expected_contents.insert(path.clone(), Some(content.as_bytes().to_vec()));
                 changes.insert(path, ApplyPatchFileChange::Delete { content });
             }
             Hunk::UpdateFile {
@@ -228,15 +234,23 @@ async fn try_verify_apply_patch_args(
                 let ApplyPatchFileUpdate {
                     unified_diff,
                     content: contents,
-                    ..
+                    original_content,
                 } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
+                expected_contents.insert(path.clone(), Some(original_content.into_bytes()));
+                let move_path = move_path
+                    .map(|path| effective_cwd.join(&path.to_string_lossy()))
+                    .transpose()?;
+                if let Some(destination) = &move_path {
+                    let content = crate::read_file_version(fs, destination, true, sandbox).await?;
+                    expected_contents
+                        .entry(destination.clone())
+                        .or_insert(content);
+                }
                 changes.insert(
                     path,
                     ApplyPatchFileChange::Update {
                         unified_diff,
-                        move_path: move_path
-                            .map(|path| effective_cwd.join(&path.to_string_lossy()))
-                            .transpose()?,
+                        move_path,
                         new_content: contents,
                     },
                 );
@@ -245,6 +259,7 @@ async fn try_verify_apply_patch_args(
     }
     Ok(ApplyPatchAction {
         changes,
+        expected_contents,
         patch,
         cwd: effective_cwd,
     })
@@ -773,6 +788,10 @@ PATCH"#,
         assert_eq!(
             result,
             MaybeApplyPatchVerified::Body(ApplyPatchAction {
+                expected_contents: HashMap::from([(
+                    PathUri::from_host_native_path(&session_file_path).expect("absolute test path"),
+                    Some(b"session directory content\n".to_vec()),
+                )]),
                 changes: HashMap::from([(
                     PathUri::from_host_native_path(session_dir.path().join(relative_path))
                         .expect("absolute test path"),
@@ -790,6 +809,67 @@ PATCH"#,
                 cwd: PathUri::from_host_native_path(session_dir.path())
                     .expect("absolute test path"),
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_patch_rejects_changed_source_and_new_move_destination() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        fs::write(&source, "old\nuntouched\n").unwrap();
+        let cwd = PathUri::from_host_native_path(dir.path()).unwrap();
+        let argv = vec!["apply_patch".to_string(), "*** Begin Patch\n*** Update File: source.txt\n*** Move to: dest.txt\n@@\n-old\n+new\n*** End Patch".to_string()];
+        let MaybeApplyPatchVerified::Body(action) =
+            maybe_parse_apply_patch_verified(&argv, &cwd, LOCAL_FS.as_ref(), None).await
+        else {
+            panic!("patch should verify")
+        };
+        action
+            .validate_file_versions(LOCAL_FS.as_ref(), true, None)
+            .await
+            .unwrap();
+        // A change outside the patch's context is still a stale approval.
+        fs::write(&source, "old\nchanged by another writer\n").unwrap();
+        assert!(
+            action
+                .validate_file_versions(LOCAL_FS.as_ref(), true, None)
+                .await
+                .is_err()
+        );
+        fs::write(&source, "old\nuntouched\n").unwrap();
+        fs::write(dir.path().join("dest.txt"), "another writer").unwrap();
+        assert!(
+            action
+                .validate_file_versions(LOCAL_FS.as_ref(), true, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "old\nuntouched\n");
+    }
+
+    #[tokio::test]
+    async fn verified_add_rejects_file_created_after_verification() {
+        let dir = tempdir().unwrap();
+        let cwd = PathUri::from_host_native_path(dir.path()).unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            "*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch".to_string(),
+        ];
+        let MaybeApplyPatchVerified::Body(action) =
+            maybe_parse_apply_patch_verified(&argv, &cwd, LOCAL_FS.as_ref(), None).await
+        else {
+            panic!("patch should verify")
+        };
+        action
+            .validate_file_versions(LOCAL_FS.as_ref(), true, None)
+            .await
+            .unwrap();
+        fs::write(dir.path().join("new.txt"), "keep me").unwrap();
+        assert!(
+            action
+                .validate_file_versions(LOCAL_FS.as_ref(), true, None)
+                .await
+                .is_err()
         );
     }
 

@@ -435,6 +435,11 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn has_queued_input(&self) -> bool {
+        self.input_queue.has_queued_follow_up_messages()
+            || !self.input_queue.pending_steers.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn queued_user_message_texts(&self) -> Vec<String> {
         self.input_queue

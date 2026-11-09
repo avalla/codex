@@ -27,6 +27,9 @@ impl NewContextWindowHandler {
 }
 
 impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
+    fn supports_parallel_tool_calls(&self) -> bool {
+        false
+    }
     fn tool_name(&self) -> ToolName {
         ToolName::plain(NEW_CONTEXT_WINDOW_TOOL_NAME)
     }
@@ -58,10 +61,42 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
                 ));
             }
 
+            if crate::clm::enabled(&invocation.turn) {
+                let history = invocation.session.clone_history().await;
+                if !invocation
+                    .session
+                    .services
+                    .thread_store
+                    .supports_paginated_history_lists()
+                    || !matches!(
+                        invocation.turn.history_mode,
+                        codex_protocol::protocol::ThreadHistoryMode::Paginated
+                    )
+                {
+                    return Err(FunctionCallError::RespondToModel(
+                        "CLM rollover requires a thread store with searchable persisted history."
+                            .into(),
+                    ));
+                }
+                if crate::clm::latest_notes(history.annotated_items())
+                    .and_then(|item| crate::clm::notes_text(&item.item))
+                    .is_none_or(|text| text.trim().is_empty())
+                {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Save non-empty context_notes before requesting a new context window."
+                            .into(),
+                    ));
+                }
+            }
+
             invocation.session.request_new_context_window().await;
 
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                NEW_CONTEXT_WINDOW_MESSAGE.to_string(),
+                if crate::clm::enabled(&invocation.turn) {
+                    "CLM rollover requested at the next safe tool boundary. Notes and complete recent tool units will be retained; if rollover cannot safely free space, ordinary compaction may be used.".into()
+                } else {
+                    NEW_CONTEXT_WINDOW_MESSAGE.to_string()
+                },
                 Some(true),
             )))
         })

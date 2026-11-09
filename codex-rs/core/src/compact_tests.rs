@@ -24,6 +24,89 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[test]
+fn selective_boundary_preserves_complete_suffix_and_rejects_empty_prefix() {
+    let items: Vec<ResponseItemEnvelope> = vec![
+        user_message("old"),
+        user_message("recent"),
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: Some("call".into()),
+            name: None,
+            namespace: None,
+            output: FunctionCallOutputPayload::from_text("result".into()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    assert_eq!(selective_boundary(&items, 1).unwrap(), 1);
+    assert!(selective_boundary(&items, 2).is_err());
+    assert!(selective_boundary(&items, 0).is_err());
+    assert!(selective_boundary(&items, 101).is_err());
+}
+
+#[tokio::test]
+async fn selective_compaction_preserves_recent_envelopes() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let provider = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        move |config| {
+            config.model = Some("gpt-5.2".into());
+            config.model_provider = provider;
+            config.model_provider.supports_websockets = false;
+        },
+    )
+    .await;
+    turn.extension_data.insert(SelectiveCompaction {
+        keep_recent_turns: 1,
+    });
+    session
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            &[user_message("old request"), user_message("recent canary")],
+        )
+        .await;
+    let before = session.clone_history().await;
+    let boundary = selective_boundary(before.annotated_items(), 1)?;
+    let expected = before.annotated_items()[boundary..].to_vec();
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![responses::sse(vec![
+            responses::ev_assistant_message("summary", "Earlier work summarized."),
+            responses::ev_completed("compact-response"),
+        ])],
+    )
+    .await;
+    let step = session
+        .capture_step_context(turn, &tokio_util::sync::CancellationToken::new())
+        .await?;
+    let world_state = Arc::new(session.build_world_state_for_step(&step, true).await?);
+    run_compact_task(
+        Arc::clone(&session),
+        step,
+        world_state,
+        vec![UserInput::Text {
+            text: "Summarize older work".into(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await?;
+    let after = session.clone_history().await;
+    assert!(after.annotated_items().ends_with(&expected));
+    assert!(
+        !mock.requests()[0]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains("recent canary"))
+    );
+    Ok(())
+}
+
 #[test_case(true; "metadata enabled")]
 #[test_case(false; "metadata disabled after capture")]
 #[tokio::test]

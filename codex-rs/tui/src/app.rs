@@ -249,6 +249,7 @@ mod quick_dials;
 mod turn_tips;
 pub(crate) use new_session::has_launch_setting;
 mod clipboard;
+mod continuity;
 mod footer_selection;
 mod native_history;
 mod owned_transcript;

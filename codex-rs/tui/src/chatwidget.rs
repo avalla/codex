@@ -1892,7 +1892,10 @@ impl ChatWidget {
         if self.blocks_direct_input
             && matches!(
                 &op,
-                AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
+                AppCommand::UserTurn { .. }
+                    | AppCommand::Review { .. }
+                    | AppCommand::Compact
+                    | AppCommand::CompactWithRetention { .. }
             )
         {
             self.add_error_message(if self.external_writer_view {
@@ -1939,6 +1942,7 @@ impl ChatWidget {
         if matches!(
             op,
             AppCommand::Compact
+                | AppCommand::CompactWithRetention { .. }
                 | AppCommand::Review { .. }
                 | AppCommand::RunUserShellCommand { .. }
         ) {

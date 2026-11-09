@@ -50,7 +50,29 @@ impl SessionTask for CompactTask {
                 .build_world_state_for_step(&step_context, /*new_window*/ true)
                 .await?,
         );
-        if ctx.config.features.enabled(Feature::TokenBudget) {
+        if ctx
+            .extension_data
+            .get::<crate::compact::SelectiveCompaction>()
+            .is_some()
+        {
+            let input = vec![UserInput::Text {
+                text: crate::compact::SUMMARIZATION_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }];
+            crate::compact::run_compact_task(session, step_context, world_state, input).await?;
+            return Ok(None);
+        }
+        if crate::clm::try_rollover(
+            &session,
+            &step_context,
+            Arc::clone(&world_state),
+            codex_analytics::CompactionTrigger::Manual,
+        )
+        .await?
+        {
+            return Ok(None);
+        }
+        if ctx.config.features.enabled(Feature::TokenBudget) && !crate::clm::enabled(&ctx) {
             crate::compact_token_budget::run_manual_compact_task(
                 session,
                 step_context,

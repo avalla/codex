@@ -15,7 +15,7 @@ const OMITTED_HISTORY: &str = "[Earlier exchanges omitted]\n\n";
 const EXCERPT_MARKER: &str = "\n[... excerpted ...]\n";
 
 pub(super) fn recap_history(cells: &[Arc<dyn HistoryCell>]) -> String {
-    let exchanges = recent_exchanges(cells);
+    let exchanges = recent_exchanges(cells, RECAP_HISTORY_MAX_TURNS);
     let Some(latest) = exchanges.last() else {
         return String::new();
     };
@@ -79,6 +79,18 @@ pub(super) fn recap_history(cells: &[Arc<dyn HistoryCell>]) -> String {
     format!("{omission}{excerpts}")
 }
 
+/// Retain the original objective and the latest progress, rather than just the last eight turns.
+/// The handoff is bounded even for very long transcripts and marks any omitted middle section.
+pub(super) fn handoff_history(cells: &[Arc<dyn HistoryCell>]) -> String {
+    let history = recent_exchanges(cells, usize::MAX)
+        .iter()
+        .flat_map(|exchange| exchange.fields())
+        .map(|(label, text)| format!("{label}: {text}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    excerpt(&history, 64 * 1024)
+}
+
 #[derive(Default)]
 struct Exchange {
     user: String,
@@ -102,7 +114,7 @@ impl Exchange {
 }
 
 // Adjacent user cells preserve steering as part of one request.
-fn recent_exchanges(cells: &[Arc<dyn HistoryCell>]) -> Vec<Exchange> {
+fn recent_exchanges(cells: &[Arc<dyn HistoryCell>], max_turns: usize) -> Vec<Exchange> {
     let mut exchanges = Vec::new();
     let mut current = Exchange::default();
     let mut answered = 0;
@@ -130,7 +142,7 @@ fn recent_exchanges(cells: &[Arc<dyn HistoryCell>]) -> Vec<Exchange> {
         if !is_user && !current.user.is_empty() {
             answered += usize::from(!current.assistant.is_empty());
             exchanges.push(std::mem::take(&mut current));
-            if answered == RECAP_HISTORY_MAX_TURNS {
+            if answered == max_turns {
                 break;
             }
         }

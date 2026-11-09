@@ -264,6 +264,7 @@ mod handlers;
 pub(crate) mod inject;
 mod reasoning_effort;
 mod submission;
+mod verification;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
 mod input_queue;
@@ -2693,6 +2694,9 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, mut msg: EventMsg) {
+        if matches!(&msg, EventMsg::TurnComplete(_)) {
+            self.persist_context_inspection(turn_context).await;
+        }
         if let Some((item_id, started_at_ms)) = msg.command_approval_start() {
             // The client can see the command before execution. Keep its first start
             // for the canonical lifecycle events that will be saved in history.
@@ -2947,6 +2951,9 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        if persist {
+            self.observe_verification(&event.msg).await;
+        }
         let flush_guardian_completion = persist
             && matches!(event.msg, EventMsg::TurnComplete(_))
             && self.is_private_guardian_reviewer().await;
@@ -4745,16 +4752,6 @@ impl Session {
             &self.services.thread_extension_data,
             &mut items,
         );
-        let mcp_revision = self
-            .services
-            .executed_tool_calls
-            .mcp_attribution_checkpoint(/*force*/ true)
-            .and_then(|(attribution, revision)| {
-                items.last_mut().map(|envelope| {
-                    envelope.metadata.get_or_insert_default().mcp_attribution = Some(attribution);
-                    revision
-                })
-            });
         if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
             matches!(
                 envelope.item,
@@ -4769,7 +4766,7 @@ impl Session {
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        let (compacted_item, started_item) = {
+        let (compacted_item, started_item, mcp_revision) = {
             let mut state = self.state.lock().await;
             let complete_replacement =
                 matches!(&installation, CompactedHistoryInstallation::Complete(_));
@@ -4837,6 +4834,24 @@ impl Session {
                     )
                 }
             };
+            // Preserve the latest revision atomically, including async prefix compaction
+            // after CLM is disabled. Notebook state is owned by the journal, not a summary.
+            if let Some(notes) = crate::clm::latest_notes(state.history.annotated_items()) {
+                items.retain(|item| crate::clm::notes_text(&item.item).is_none());
+                items.push(notes.clone());
+            }
+            // Stamp only after notebook/suffix assembly so the attribution carrier survives.
+            let mcp_revision = self
+                .services
+                .executed_tool_calls
+                .mcp_attribution_checkpoint(/*force*/ true)
+                .and_then(|(attribution, revision)| {
+                    items.last_mut().map(|envelope| {
+                        envelope.metadata.get_or_insert_default().mcp_attribution =
+                            Some(attribution);
+                        revision
+                    })
+                });
             for envelope in &mut items {
                 self.assign_missing_response_item_id(&mut envelope.item);
             }
@@ -4904,7 +4919,7 @@ impl Session {
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
             };
-            (compacted_item, started_item)
+            (compacted_item, started_item, mcp_revision)
         };
 
         if let Some((turn_context, item)) = started_item {
@@ -5379,6 +5394,10 @@ impl Session {
     pub(crate) async fn request_new_context_window(&self) {
         let mut state = self.state.lock().await;
         state.request_new_context_window();
+    }
+
+    pub(crate) async fn claim_context_window_reminder(&self) -> bool {
+        self.state.lock().await.claim_token_budget_reminder()
     }
 
     pub(crate) async fn take_new_context_window_request(&self) -> bool {

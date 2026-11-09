@@ -5537,6 +5537,14 @@ class ThreadCompactStartParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    keep_recent_turns: Annotated[
+        int | None,
+        Field(
+            alias="keepRecentTurns",
+            description="Preserve this many recent complete user turns verbatim (1..=100). Omit for the normal provider-specific compaction policy.",
+            ge=0,
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 

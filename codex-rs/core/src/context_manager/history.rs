@@ -723,6 +723,8 @@ impl ContextManager {
         input_modalities: &[InputModality],
         image_store: &dyn AttachmentStore,
     ) -> Vec<ResponseItemEnvelope> {
+        // Keep revision history durable; only the latest notebook belongs in a request.
+        crate::clm::retain_latest_notes(Arc::make_mut(&mut self.items));
         self.normalize_history(input_modalities);
         replace_unresolvable_image_files(
             Arc::make_mut(&mut self.items)

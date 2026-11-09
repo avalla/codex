@@ -1,6 +1,11 @@
 pub(crate) mod apply_patch;
 pub(crate) mod apply_patch_spec;
+mod context_notes;
 mod current_time;
+mod language_server;
+pub(crate) use context_notes::ContextHistoryHandler;
+pub(crate) use context_notes::ContextNotesHandler;
+pub(crate) use language_server::LanguageServerHandler;
 mod dynamic;
 pub(crate) mod extension_tools;
 mod get_context_remaining;

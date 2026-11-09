@@ -2604,7 +2604,13 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadCompactStartParams,
     ) -> Result<ThreadCompactStartResponse, JSONRPCErrorError> {
-        let ThreadCompactStartParams { thread_id } = params;
+        let ThreadCompactStartParams {
+            thread_id,
+            keep_recent_turns,
+        } = params;
+        if keep_recent_turns.is_some_and(|keep| !(1..=100).contains(&keep)) {
+            return Err(invalid_params("keepRecentTurns must be between 1 and 100"));
+        }
 
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
@@ -2612,7 +2618,10 @@ impl ThreadRequestProcessor {
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
-        self.submit_core_op(request_id, thread.as_ref(), Op::Compact)
+        let op = keep_recent_turns.map_or(Op::Compact, |keep_recent_turns| {
+            Op::CompactWithRetention { keep_recent_turns }
+        });
+        self.submit_core_op(request_id, thread.as_ref(), op)
             .await
             .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
         Ok(ThreadCompactStartResponse {})

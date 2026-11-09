@@ -189,6 +189,9 @@ pub(crate) enum AppCommand {
         force_reload: bool,
     },
     Compact,
+    CompactWithRetention {
+        keep_recent_turns: u32,
+    },
     SetThreadName {
         name: String,
     },

@@ -39,6 +39,10 @@ pub enum SlashCommand {
     App,
     Init,
     Compact,
+    Handoff,
+    Checks,
+    Context,
+    Timeline,
     Config,
     Recap,
     Plan,
@@ -97,7 +101,13 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Handoff => {
+                "continue work in a new chat with a summary of this conversation"
+            }
             SlashCommand::Recap => "summarize the current conversation now",
+            SlashCommand::Checks => "show saved runtime check results and workspace freshness",
+            SlashCommand::Context => "inspect context usage and compaction limits",
+            SlashCommand::Timeline => "inspect handoff links and fork ancestry",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
@@ -153,7 +163,9 @@ impl SlashCommand {
             SlashCommand::Memories => "configure memory use and generation",
             SlashCommand::Mcp => "list MCP tools; use /mcp verbose or /mcp login <name>",
             SlashCommand::Apps => "manage apps",
-            SlashCommand::Plugins => "browse plugins",
+            SlashCommand::Plugins => {
+                "browse plugins; use /plugins reload to reload installed plugins"
+            }
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -171,6 +183,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Compact
                 | SlashCommand::Model
                 | SlashCommand::Permissions
                 | SlashCommand::Title
@@ -186,6 +199,7 @@ impl SlashCommand {
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Export
+                | SlashCommand::Plugins
                 | SlashCommand::Raw
                 | SlashCommand::Cd
                 | SlashCommand::Pwd
@@ -253,6 +267,7 @@ impl SlashCommand {
             | SlashCommand::Worktree
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Handoff
             | SlashCommand::Recap
             | SlashCommand::Export
             | SlashCommand::Keymap
@@ -270,6 +285,9 @@ impl SlashCommand {
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
+            | SlashCommand::Checks
+            | SlashCommand::Context
+            | SlashCommand::Timeline
             | SlashCommand::Archive
             | SlashCommand::Resume
             | SlashCommand::Model

@@ -4729,6 +4729,15 @@
     },
     "ThreadCompactStartParams": {
       "properties": {
+        "keepRecentTurns": {
+          "description": "Preserve this many recent complete user turns verbatim (1..=100). Omit for the normal provider-specific compaction policy.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }

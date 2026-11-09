@@ -168,6 +168,8 @@ pub enum MaybeApplyPatchVerified {
 #[derive(Debug, PartialEq)]
 pub struct ApplyPatchAction {
     changes: HashMap<PathUri, ApplyPatchFileChange>,
+    /// Exact inputs used for verification, including absent add/move destinations.
+    expected_contents: HashMap<PathUri, Option<Vec<u8>>>,
 
     /// The raw patch argument that can be used to apply the patch. i.e., if the
     /// original arg was parsed in "lenient" mode with a
@@ -179,6 +181,27 @@ pub struct ApplyPatchAction {
 }
 
 impl ApplyPatchAction {
+    /// Recheck the verified inputs after an approval delay, before any writes.
+    /// This detects stale approvals; it is not a filesystem transaction and cannot
+    /// exclude an external writer racing the subsequent write itself.
+    pub async fn validate_file_versions(
+        &self,
+        fs: &dyn ExecutorFileSystem,
+        follow_symlinks: bool,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> anyhow::Result<()> {
+        for (path, expected) in &self.expected_contents {
+            let actual = read_file_version(fs, path, follow_symlinks, sandbox).await?;
+            if &actual != expected {
+                anyhow::bail!(
+                    "File changed since patch verification: {}. Read the file again and regenerate the patch.",
+                    path.inferred_native_path_string()
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
@@ -204,9 +227,26 @@ impl ApplyPatchAction {
         #[expect(clippy::expect_used)]
         Self {
             changes,
+            expected_contents: HashMap::new(),
             cwd: path.parent().expect("path should have parent"),
             patch,
         }
+    }
+}
+
+async fn read_file_version(
+    fs: &dyn ExecutorFileSystem,
+    path: &PathUri,
+    follow_symlinks: bool,
+    sandbox: Option<&FileSystemSandboxContext>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    match fs
+        .read_file(path, ReadFileOptions { follow_symlinks }, sandbox)
+        .await
+    {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 

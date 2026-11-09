@@ -895,6 +895,9 @@
             "cli_resume_account_check": {
               "type": "boolean"
             },
+            "clm": {
+              "type": "boolean"
+            },
             "code_mode": {
               "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
             },
@@ -2724,6 +2727,37 @@
         }
       ],
       "description": "One action binding value in config.\n\nThis accepts either:\n\n1. A single key or chord string (`\"ctrl-a\"` or `\"ctrl-x ctrl-s\"`). 2. A list of alternative bindings (`[\"ctrl-a\", \"ctrl-x ctrl-s\"]`).\n\nAn empty list explicitly unbinds the action in that scope. Because an explicit empty list is still a configured value, runtime resolution must not fall through to global or built-in defaults for that action."
+    },
+    "LanguageServerConfig": {
+      "additionalProperties": false,
+      "description": "An explicitly configured stdio language server. Executed under session permissions.",
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "diagnostics_on_edit": {
+          "default": false,
+          "type": "boolean"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "language_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "extensions",
+        "language_id"
+      ],
+      "type": "object"
     },
     "LegacyAppPathString": {
       "type": "string"
@@ -7954,6 +7988,9 @@
         "cli_resume_account_check": {
           "type": "boolean"
         },
+        "clm": {
+          "type": "boolean"
+        },
         "code_mode": {
           "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
         },
@@ -8650,6 +8687,14 @@
     "instructions": {
       "description": "System instructions.",
       "type": "string"
+    },
+    "language_servers": {
+      "additionalProperties": {
+        "$ref": "#/definitions/LanguageServerConfig"
+      },
+      "default": {},
+      "description": "Explicit language-server commands, keyed by a user-selected name.",
+      "type": "object"
     },
     "log_dir": {
       "allOf": [

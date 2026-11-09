@@ -3668,6 +3668,7 @@ name = "codex-git-utils"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "codex-file-system",
  "codex-protocol",

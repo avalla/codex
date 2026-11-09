@@ -71,6 +71,27 @@ fn assistant_history_cell(message: &str) -> Arc<dyn HistoryCell> {
 }
 
 #[test]
+fn handoff_history_keeps_the_original_goal_and_recent_progress_within_budget() {
+    let mut cells = vec![user_history_cell("Original goal: fix the parser")];
+    for index in 0..20 {
+        cells.push(assistant_history_cell(&format!("answer-{index}")));
+        cells.push(user_history_cell(&format!("question-{index}")));
+    }
+    let history = super::handoff_history(&cells);
+    assert!(history.contains("Original goal: fix the parser"));
+    assert!(history.contains("answer-0"));
+    assert!(history.contains("question-19"));
+
+    cells.push(assistant_history_cell(&"è🦀".repeat(20_000)));
+    cells.push(user_history_cell("Latest correction: preserve whitespace"));
+    let history = super::handoff_history(&cells);
+    assert!(history.len() <= 64 * 1024);
+    assert!(history.contains("Original goal: fix the parser"));
+    assert!(history.contains("[... excerpted ...]"));
+    assert!(history.ends_with("Latest correction: preserve whitespace"));
+}
+
+#[test]
 fn recap_history_preserves_chronological_user_and_assistant_messages() {
     let cells = vec![
         user_history_cell("First request"),
@@ -252,6 +273,7 @@ fn generated_recap_is_normalized_and_bounded() {
         (
             serde_json::json!({"summary": "  Fixed the parser.  ", "next_action": "  Run integration tests.  "}),
             Some(GeneratedRecap {
+                state: None,
                 summary: "Fixed the parser.".to_string(),
                 next_action: Some("Run integration tests.".to_string()),
             }),
@@ -259,6 +281,7 @@ fn generated_recap_is_normalized_and_bounded() {
         (
             serde_json::json!({"summary": "Done", "next_action": "  "}),
             Some(GeneratedRecap {
+                state: None,
                 summary: "Done".to_string(),
                 next_action: None,
             }),
@@ -266,6 +289,7 @@ fn generated_recap_is_normalized_and_bounded() {
         (
             serde_json::json!({"summary": summary, "next_action": action}),
             Some(GeneratedRecap {
+                state: None,
                 summary: summary.clone(),
                 next_action: Some(action.clone()),
             }),
@@ -956,6 +980,123 @@ async fn app_with_visible_thread(thread_id: ThreadId) -> Box<App> {
     let mut app = make_test_app().await;
     app.active_thread_id = Some(thread_id);
     app
+}
+
+#[tokio::test]
+async fn generated_handoff_accepts_detailed_summary_with_auto_recap_disabled() {
+    let thread_id = ThreadId::new();
+    let mut app = app_with_visible_thread(thread_id).await;
+    app.local_settings.tui.auto_recap = false;
+    let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+    request.trigger = RecapTrigger::Handoff;
+    app.recap.in_flight_trigger = Some(request.trigger);
+    let summary = "Detailed progress. ".repeat(80);
+    let message = app
+        .handle_generated_handoff(
+            request,
+            temporary_thread_id,
+            Ok(serde_json::json!({"summary": summary, "next_action": "Run tests"}).to_string()),
+        )
+        .expect("handoff message")
+        .render();
+
+    assert!(message.contains(&thread_id.to_string()));
+    assert!(message.contains(summary.trim()));
+    assert!(message.contains("Run tests"));
+    assert!(app.recap.in_flight_request_id.is_none());
+    assert_eq!(app.recap.last_recapped_turn_count, None);
+}
+
+#[tokio::test]
+async fn handoff_rejects_stale_failed_or_invalid_results_without_switching_threads() {
+    let thread_id = ThreadId::new();
+    let mut app = app_with_visible_thread(thread_id).await;
+    for result in [
+        Err("request failed".to_string()),
+        Ok("not json".to_string()),
+        Ok(serde_json::json!({"summary": " ", "next_action": null}).to_string()),
+        Ok(serde_json::json!({"summary": "x".repeat(super::HANDOFF_MAX_CHARS + 1), "next_action": null}).to_string()),
+    ] {
+        let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+        request.trigger = RecapTrigger::Handoff;
+        app.recap.in_flight_trigger = Some(request.trigger);
+        assert!(app.handle_generated_handoff(request, temporary_thread_id, result).is_none());
+        assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
+        assert!(app.recap.in_flight_request_id.is_none());
+        assert!(app.recap.scheduled_check.is_none());
+    }
+
+    for changed_thread in [false, true] {
+        let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+        request.trigger = RecapTrigger::Handoff;
+        app.recap.in_flight_trigger = Some(request.trigger);
+        if changed_thread {
+            app.active_thread_id = Some(ThreadId::new());
+        } else {
+            app.recap
+                .note_turn_finished(&TurnStatus::Completed, Instant::now());
+        }
+        assert!(
+            app.handle_generated_handoff(
+                request,
+                temporary_thread_id,
+                Ok(serde_json::json!({"summary": "outdated", "next_action": null}).to_string()),
+            )
+            .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn handoff_preserves_new_composer_input() {
+    let thread_id = ThreadId::new();
+    let mut app = app_with_visible_thread(thread_id).await;
+    let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+    request.trigger = RecapTrigger::Handoff;
+    app.recap.in_flight_trigger = Some(request.trigger);
+    app.chat_widget
+        .restore_user_message_to_composer("New correction".to_string().into());
+    assert!(
+        app.handle_generated_handoff(
+            request,
+            temporary_thread_id,
+            Ok(serde_json::json!({"summary": "progress", "next_action": null}).to_string()),
+        )
+        .is_none()
+    );
+    assert_eq!(
+        app.chat_widget.composer_draft_snapshot().text,
+        "New correction"
+    );
+    assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
+}
+
+#[tokio::test]
+async fn handoff_preserves_queued_follow_up_input() {
+    let thread_id = ThreadId::new();
+    let mut app = app_with_visible_thread(thread_id).await;
+    let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+    request.trigger = RecapTrigger::Handoff;
+    app.recap.in_flight_trigger = Some(request.trigger);
+    app.chat_widget.queue_user_message_with_options(
+        "Queued correction".to_string().into(),
+        crate::bottom_pane::QueuedInputAction::Plain,
+        Vec::new(),
+    );
+    assert!(app.chat_widget.has_queued_input());
+    assert!(
+        app.handle_generated_handoff(
+            request,
+            temporary_thread_id,
+            Ok(serde_json::json!({"summary": "progress", "next_action": null}).to_string()),
+        )
+        .is_none()
+    );
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        vec!["Queued correction"]
+    );
+    assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
 }
 
 #[tokio::test]

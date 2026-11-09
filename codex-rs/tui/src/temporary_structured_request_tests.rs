@@ -239,7 +239,7 @@ async fn returns_latest_matching_assistant_message() {
         .send(turn_completed_notification("turn-1", TurnStatus::Completed))
         .expect("send matching completion");
 
-    let response = collect_structured_response(receiver, "turn-1")
+    let response = collect_structured_response(receiver, "turn-1", STRUCTURED_RESPONSE_MAX_BYTES)
         .await
         .expect("collect structured response");
 
@@ -253,7 +253,7 @@ async fn rejects_failed_turn() {
         .send(turn_completed_notification("turn-1", TurnStatus::Failed))
         .expect("send failed completion");
 
-    let error = collect_structured_response(receiver, "turn-1")
+    let error = collect_structured_response(receiver, "turn-1", STRUCTURED_RESPONSE_MAX_BYTES)
         .await
         .expect_err("failed turn should not produce a response");
 
@@ -270,7 +270,7 @@ async fn rejects_completion_without_assistant_message() {
         .send(turn_completed_notification("turn-1", TurnStatus::Completed))
         .expect("send completion");
 
-    let error = collect_structured_response(receiver, "turn-1")
+    let error = collect_structured_response(receiver, "turn-1", STRUCTURED_RESPONSE_MAX_BYTES)
         .await
         .expect_err("completion without assistant message should fail");
 
@@ -285,7 +285,7 @@ async fn rejects_closed_notification_channel() {
     let (sender, receiver) = unbounded_channel();
     drop(sender);
 
-    let error = collect_structured_response(receiver, "turn-1")
+    let error = collect_structured_response(receiver, "turn-1", STRUCTURED_RESPONSE_MAX_BYTES)
         .await
         .expect_err("closed notification channel should fail");
 
@@ -293,6 +293,29 @@ async fn rejects_closed_notification_channel() {
         error.to_string(),
         "temporary structured turn notification channel closed"
     );
+}
+
+#[tokio::test]
+async fn accepts_larger_response_only_with_explicit_budget() {
+    let response = "è".repeat(6_000);
+    for (budget, accepted) in [(STRUCTURED_RESPONSE_MAX_BYTES, false), (96 * 1024, true)] {
+        let (sender, receiver) = unbounded_channel();
+        sender
+            .send(agent_message_notification("turn-1", &response))
+            .expect("send assistant message");
+        sender
+            .send(turn_completed_notification("turn-1", TurnStatus::Completed))
+            .expect("send completion");
+        let result = collect_structured_response(receiver, "turn-1", budget).await;
+        if accepted {
+            assert_eq!(
+                result.expect("response within the explicit budget"),
+                response
+            );
+        } else {
+            assert!(result.is_err());
+        }
+    }
 }
 
 #[tokio::test]
@@ -306,7 +329,7 @@ async fn rejects_oversized_assistant_message() {
         .send(turn_completed_notification("turn-1", TurnStatus::Completed))
         .expect("send matching completion");
 
-    let error = collect_structured_response(receiver, "turn-1")
+    let error = collect_structured_response(receiver, "turn-1", STRUCTURED_RESPONSE_MAX_BYTES)
         .await
         .expect_err("oversized assistant message should be rejected");
 

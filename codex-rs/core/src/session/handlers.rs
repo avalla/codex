@@ -268,12 +268,23 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+    compact_with_retention(sess, sub_id, None).await;
+}
+
+async fn compact_with_retention(sess: &Arc<Session>, sub_id: String, keep: Option<u32>) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
+    if let Some(keep) = keep {
+        turn_context
+            .extension_data
+            .insert(crate::compact::SelectiveCompaction {
+                keep_recent_turns: keep as usize,
+            });
+    }
     sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
 
@@ -773,6 +784,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::Compact => {
                     compact(&sess, sub.id.clone()).await;
+                    false
+                }
+                Op::CompactWithRetention { keep_recent_turns } => {
+                    compact_with_retention(&sess, sub.id.clone(), Some(keep_recent_turns)).await;
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

@@ -793,6 +793,7 @@ pub struct Config {
 
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
+    pub language_servers: BTreeMap<String, codex_config::config_toml::LanguageServerConfig>,
 
     /// Optional external notifier command. When set, Codex will spawn this
     /// program after each completed *turn* (i.e. when the agent finishes
@@ -4655,6 +4656,7 @@ impl Config {
             developer_instructions,
             compact_prompt,
             include_permissions_instructions,
+            language_servers: cfg.language_servers,
             include_apps_instructions,
             include_collaboration_mode_instructions,
             include_skill_instructions,

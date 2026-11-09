@@ -59,12 +59,31 @@ async fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
 
 #[tokio::test]
 async fn recap_generation_uses_bounded_structured_request_and_inserts_result() -> Result<()> {
+    generate_summary_and_check_destination(false).await
+}
+
+#[tokio::test]
+async fn handoff_generation_submits_detailed_summary_to_a_new_thread() -> Result<()> {
+    generate_summary_and_check_destination(true).await
+}
+
+async fn generate_summary_and_check_destination(handoff: bool) -> Result<()> {
+    let summary = if handoff {
+        "Finished parsing. ".repeat(600).trim().to_string()
+    } else {
+        "Finished parsing.".to_string()
+    };
+    let mut generated =
+        serde_json::json!({"summary": summary, "next_action": "Run focused tests."});
+    if handoff {
+        generated["state"] = serde_json::to_value(codex_protocol::continuity::HandoffState {
+            objective: "Finish the recap implementation".into(),
+            ..Default::default()
+        })?;
+    }
     let chunks = [
         ev_response_created("recap-response"),
-        ev_assistant_message(
-            "recap-message",
-            r#"{"summary":"Finished parsing.","next_action":"Run focused tests."}"#,
-        ),
+        ev_assistant_message("recap-message", &generated.to_string()),
         ev_completed("recap-response"),
     ]
     .into_iter()
@@ -139,7 +158,11 @@ stream_max_retries = 0
     app.handle_event(
         &mut tui,
         &mut app_server,
-        AppEvent::CheckRecap { thread_id },
+        if handoff {
+            AppEvent::Handoff { thread_id }
+        } else {
+            AppEvent::CheckRecap { thread_id }
+        },
     )
     .await?;
     let started_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), app_event_rx.recv())
@@ -170,27 +193,83 @@ stream_max_retries = 0
     app.handle_event(&mut tui, &mut app_server, generated_event)
         .await?;
 
-    let recap = app
-        .transcript_cells
-        .last()
-        .and_then(|cell| {
-            cell.as_any()
-                .downcast_ref::<crate::history_cell::ThreadRecapHistoryCell>()
-        })
-        .expect("recap history cell");
-    assert_eq!(
-        recap
-            .raw_lines()
+    if handoff {
+        let new_thread_id = app.current_displayed_thread_id().expect("new chat");
+        if new_thread_id == thread_id {
+            let mut errors = Vec::new();
+            while let Ok(event) = app_event_rx.try_recv() {
+                if let AppEvent::InsertHistoryCell(cell) = event {
+                    errors.extend(cell.display_lines(120).iter().map(ToString::to_string));
+                }
+            }
+            panic!("handoff did not switch threads: {}", errors.join("\n"));
+        }
+        assert_ne!(new_thread_id, thread_id);
+        let source_attachments = app_server.continuity_attachments(thread_id).await?;
+        let handoff = source_attachments
             .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        vec![
-            "Conversation recap",
-            "Finished parsing.",
-            "Next: Run focused tests.",
-        ]
-    );
-
+            .find(|attachment| {
+                attachment.attachment_type == codex_protocol::continuity::HANDOFF_ATTACHMENT_TYPE
+            })
+            .expect("durable source handoff");
+        let record: codex_protocol::continuity::HandoffRecord =
+            serde_json::from_value(handoff.payload.clone())?;
+        assert!(record.validate().is_ok());
+        assert_eq!(record.summary, summary);
+        assert_eq!(
+            record.model_state.objective,
+            "Finish the recap implementation"
+        );
+        let links = app_server.continuity_attachments(new_thread_id).await?;
+        assert!(links.iter().any(|link| link.identity_key == record.id
+            && link.payload["source_thread_id"] == thread_id.to_string()));
+        let mut submitted = None;
+        while let Ok(event) = app_event_rx.try_recv() {
+            match event {
+                AppEvent::SubmitThreadOp {
+                    thread_id: target,
+                    op: Op::UserTurn { items, .. },
+                } => {
+                    assert_eq!(target, new_thread_id);
+                    submitted = Some(items);
+                }
+                AppEvent::CodexOp(Op::UserTurn { items, .. }) => submitted = Some(items),
+                _ => {}
+            }
+        }
+        let submitted = submitted.expect("handoff submitted to the new chat");
+        assert!(submitted.iter().any(|item| matches!(
+            item, UserInput::Text { text, .. }
+                if text.contains(&summary)
+                    && text.contains(&thread_id.to_string())
+                    && text.contains("Run focused tests.")
+        )));
+        assert!(!app.transcript_cells.iter().any(|cell| {
+            cell.as_any()
+                .is::<crate::history_cell::ThreadRecapHistoryCell>()
+        }));
+    } else {
+        let recap = app
+            .transcript_cells
+            .last()
+            .and_then(|cell| {
+                cell.as_any()
+                    .downcast_ref::<crate::history_cell::ThreadRecapHistoryCell>()
+            })
+            .expect("recap history cell");
+        assert_eq!(
+            recap
+                .raw_lines()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "Conversation recap",
+                "Finished parsing.",
+                "Next: Run focused tests.",
+            ]
+        );
+    }
     let model_requests = model_server.requests().await;
     assert_eq!(model_requests.len(), 1);
     let request: Value = serde_json::from_slice(&model_requests[0])?;
@@ -205,10 +284,15 @@ stream_max_retries = 0
         prompt.contains("Finish the recap implementation"),
         "prompt: {prompt}\nrequest: {request}"
     );
-    assert!(prompt.len() <= recap::RECAP_PROMPT_MAX_BYTES);
+    if handoff {
+        assert!(prompt.contains("Prepare a detailed handoff"));
+        assert!(prompt.len() <= 70 * 1024);
+    } else {
+        assert!(prompt.len() <= recap::RECAP_PROMPT_MAX_BYTES);
+        assert!(prompt.contains("[... excerpted ...]"));
+    }
     assert!(prompt.contains("Assistant: Parser fix implemented."));
     assert!(prompt.contains("What should empty input do?"));
-    assert!(prompt.contains("[... excerpted ...]"));
     assert_eq!(
         prompt
             .matches("Pending user request: Keep follow-up work queued.")
@@ -218,7 +302,11 @@ stream_max_retries = 0
     assert_eq!(request["text"]["format"]["type"], "json_schema");
     assert_eq!(
         request["text"]["format"]["schema"]["required"],
-        serde_json::json!(["summary", "next_action"])
+        if handoff {
+            serde_json::json!(["summary", "next_action", "state"])
+        } else {
+            serde_json::json!(["summary", "next_action"])
+        }
     );
     assert_eq!(request["tools"], serde_json::json!([]));
 

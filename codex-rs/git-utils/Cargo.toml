@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
+blake3 = { workspace = true }
 chrono = { workspace = true }
 codex-file-system = { workspace = true }
 codex-protocol = { workspace = true }

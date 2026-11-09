@@ -67,6 +67,30 @@ const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 /// Insert into `StartThreadOptions::thread_extension_init` to disable automatic compaction.
 pub struct AutoCompactionDisabled;
 
+pub(crate) struct SelectiveCompaction {
+    pub(crate) keep_recent_turns: usize,
+}
+
+fn selective_boundary(items: &[ResponseItemEnvelope], keep: usize) -> CodexResult<usize> {
+    if !(1..=100).contains(&keep) {
+        return Err(CodexErr::Fatal(
+            "Retained turns must be between 1 and 100".into(),
+        ));
+    }
+    let boundaries: Vec<_> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| crate::context_manager::is_user_turn_boundary(&item.item))
+        .map(|(index, _)| index)
+        .collect();
+    if boundaries.len() <= keep {
+        return Err(CodexErr::Fatal(
+            "No older user turns to compact; choose fewer retained turns".into(),
+        ));
+    }
+    Ok(boundaries[boundaries.len() - keep])
+}
+
 /// Metadata for a new compaction checkpoint, kept separate from its replacement history.
 ///
 /// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted
@@ -275,7 +299,26 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    let selective = turn_context
+        .extension_data
+        .get::<SelectiveCompaction>()
+        .is_some();
     let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
+    let retained = if let Some(policy) = turn_context.extension_data.get::<SelectiveCompaction>() {
+        if crate::compact_pending_input::pending_mail_sequence(history.annotated_items()).is_some()
+        {
+            return Err(CodexErr::Fatal(
+                "Finish pending input before selectively compacting history".into(),
+            ));
+        }
+        let boundary = selective_boundary(history.annotated_items(), policy.keep_recent_turns)?;
+        let suffix = history.annotated_items()[boundary..].to_vec();
+        history.replace_annotated(history.annotated_items()[..boundary].to_vec());
+        Some(suffix)
+    } else {
+        None
+    };
+    let prefix_items = history.annotated_items().to_vec();
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
@@ -396,25 +439,46 @@ async fn run_compact_task_inner_impl(
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();
-    let summary_suffix = if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
-        get_last_assistant_message_from_turn(compaction_response.output.iter())
-            .filter(|summary| !summary.trim().is_empty())
-            .ok_or_else(|| {
-                CodexErr::Stream(
-                    "Post-turn compaction completed without an assistant summary".to_string(),
-                )
-            })?
-    } else {
-        get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()
-    };
+    let summary_suffix =
+        if retained.is_some() || matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
+            get_last_assistant_message_from_turn(compaction_response.output.iter())
+                .filter(|summary| !summary.trim().is_empty())
+                .ok_or_else(|| {
+                    CodexErr::Stream(
+                        "Post-turn compaction completed without an assistant summary".to_string(),
+                    )
+                })?
+        } else {
+            get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()
+        };
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_annotated_user_messages(history_items);
+    let user_messages = collect_annotated_user_messages(if retained.is_some() {
+        &prefix_items
+    } else {
+        history_items
+    });
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
         summary_item.set_turn_id_if_missing(&turn_context.sub_id);
+    }
+    if let Some(retained) = retained {
+        new_history.extend(retained);
+    }
+    if selective {
+        let mut candidate = history.clone();
+        candidate.replace_annotated(new_history.clone());
+        if let (Some(estimate), Some(limit)) = (
+            candidate.estimate_token_count(&turn_context),
+            turn_context.model_context_window(),
+        ) && estimate >= limit
+        {
+            return Err(CodexErr::Fatal(
+                "Retained turns exceed the context window; retry /compact with fewer turns".into(),
+            ));
+        }
     }
     // Use the final compactor input, so an overflow retry cannot restore discarded input.
     let pending_sequence =
@@ -903,7 +967,12 @@ async fn drain_to_completed(
                 usage_metadata,
                 ..
             }) => {
-                if !matches!(phase, CompactionPhase::PostTurn) {
+                if !matches!(phase, CompactionPhase::PostTurn)
+                    && turn_context
+                        .extension_data
+                        .get::<SelectiveCompaction>()
+                        .is_none()
+                {
                     for item in std::mem::take(&mut output) {
                         sess.record_annotated_conversation_items(
                             turn_context,

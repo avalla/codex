@@ -1144,6 +1144,26 @@ impl App {
         initial_user_message: Option<crate::chatwidget::UserMessage>,
         new_thread_name: Option<String>,
     ) {
+        self.start_fresh_session_with_handoff(
+            tui,
+            app_server,
+            session_start_source,
+            initial_user_message,
+            new_thread_name,
+            None,
+        )
+        .await;
+    }
+
+    pub(super) async fn start_fresh_session_with_handoff(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        session_start_source: Option<ThreadStartSource>,
+        initial_user_message: Option<crate::chatwidget::UserMessage>,
+        new_thread_name: Option<String>,
+        handoff: Option<codex_protocol::continuity::HandoffRecord>,
+    ) {
         if self.reject_pending_permission_root_switch() {
             if let Some(message) = initial_user_message {
                 self.chat_widget.restore_user_message_to_composer(message);
@@ -1199,6 +1219,24 @@ impl App {
             .await
         {
             Ok(started) => {
+                if let Some(record) = &handoff {
+                    // Persist the destination link before enqueueing any model turn.
+                    if let Err(error) = app_server
+                        .save_handoff_link(started.session.thread_id, record)
+                        .await
+                    {
+                        let _ = app_server
+                            .thread_unsubscribe(started.session.thread_id)
+                            .await;
+                        self.chat_widget.add_error_message(format!(
+                            "Could not persist the handoff link: {error:#}. The source handoff is saved; no continuation was submitted."
+                        ));
+                        if let Some(message) = initial_user_message {
+                            self.chat_widget.restore_user_message_to_composer(message);
+                        }
+                        return;
+                    }
+                }
                 self.adopt_fresh_session(
                     tui,
                     app_server,

@@ -143,6 +143,7 @@ impl App {
                     | AppEvent::SelectAgentThread(_)
                     | AppEvent::StartSide { .. }
                     | AppEvent::ForkCurrentSession { .. }
+                    | AppEvent::Handoff { .. }
                     | AppEvent::StartManagedWorktree {
                         mode: crate::app_event::ManagedWorktreeMode::Fork,
                         ..
@@ -1663,6 +1664,19 @@ impl App {
             }
             AppEvent::PluginInstallAuthAbandon => {
                 self.chat_widget.abandon_plugin_install_auth_flow();
+            }
+            AppEvent::ReloadPlugins => {
+                match app_server.reload_user_config().await {
+                    Ok(()) => {
+                        self.chat_widget.refresh_plugin_mentions();
+                        self.chat_widget.refresh_connector_mentions(/*force_refresh*/ true);
+                        self.chat_widget.add_info_message(
+                            "Plugin reload requested. Updated skills, hooks, and MCP tools will be used by subsequent turns.".to_string(),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!("Failed to reload plugins: {err}")),
+                }
             }
             AppEvent::FetchPluginsList { cwd } => {
                 self.fetch_plugins_list(app_server, cwd);
@@ -3857,6 +3871,22 @@ impl App {
                 self.apply_keymap_clear(context, action).await;
                 self.merge_startup_warnings(tui, &history_cell::StartupWarningsCell::default());
             }
+            AppEvent::ShowContinuity { thread_id, view } => {
+                if self.current_displayed_thread_id() == Some(thread_id) {
+                    self.show_continuity(app_server, thread_id, view).await;
+                }
+            }
+            AppEvent::Handoff { thread_id } => {
+                if self.current_displayed_thread_id() == Some(thread_id) {
+                    if self.chat_widget.is_user_turn_pending_or_running() {
+                        self.chat_widget.add_error_message(
+                            "Wait for the current task to finish before running /handoff.".to_string(),
+                        );
+                    } else {
+                        self.request_recap(app_server, thread_id, RecapTrigger::Handoff);
+                    }
+                }
+            }
             AppEvent::GenerateRecap { thread_id } => {
                 if self.current_displayed_thread_id() == Some(thread_id) {
                     if self.chat_widget.is_user_turn_pending_or_running() {
@@ -3910,14 +3940,39 @@ impl App {
                 result,
             } => {
                 self.temporary_structured_requests.remove(&temporary_thread_id);
-                if let Some(cell) = self.handle_generated_recap(
-                    recap::RecapRequest {
-                        thread_id,
-                        request_id,
-                        trigger,
-                        completed_turn_count,
-                        turn_revision,
-                    },
+                let request = recap::RecapRequest {
+                    thread_id,
+                    request_id,
+                    trigger,
+                    completed_turn_count,
+                    turn_revision,
+                };
+                if trigger == RecapTrigger::Handoff {
+                    if let Some(mut record) = self.handle_generated_handoff(
+                        request,
+                        temporary_thread_id,
+                        result,
+                    ) {
+                        if let Err(error) = app_server.capture_handoff_evidence(&mut record).await {
+                            self.chat_widget.add_error_message(format!("Could not read handoff verification evidence: {error}. Your current chat is unchanged."));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        if let Err(error) = app_server.save_handoff_record(&record).await {
+                            self.chat_widget.add_error_message(format!("Could not save handoff: {error:#}. Your current chat is unchanged."));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        self.start_fresh_session_with_handoff(
+                            tui,
+                            app_server,
+                            /*session_start_source*/ None,
+                            Some(record.render().into()),
+                            /*new_thread_name*/ None,
+                            Some(record),
+                        )
+                        .await;
+                    }
+                } else if let Some(cell) = self.handle_generated_recap(
+                    request,
                     temporary_thread_id,
                     result,
                 ) {
