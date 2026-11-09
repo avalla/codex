@@ -14,7 +14,7 @@ still allowing managed hooks from requirements and managed config layers. This
 setting is only supported in `requirements.toml`; putting it in `config.toml`
 does not enable managed-hooks-only mode.
 
-## Automatic compaction and handoff
+## Automatic compaction
 
 Codex automatically compacts the conversation when it reaches the model's token
 threshold. No command or opt-in is required. By default the threshold comes from
@@ -25,27 +25,26 @@ positive token limit at the top level of `config.toml`, for example:
 model_auto_compact_token_limit = 100000
 ```
 
-The model's context-window cap still applies. Compaction keeps you in the same
-chat and lets work continue with summarized context. `/compact` requests it
-immediately; automatic compaction does not require periodically running that
-command.
+Compaction summarizes context within the current chat. You can request it
+immediately with `/compact`. See [Slash commands](slash_commands.md#session-continuity-in-this-fork)
+for selective compaction and handoff in this fork.
 
-In the terminal UI, `/handoff` summarizes the current conversation and starts a
-new chat with that summary as its first message. Run it after the current task
-finishes. The summary covers the objective, constraints, decisions, completed
-work and next steps from the visible user and assistant exchanges. Long histories
-are bounded, preserving the beginning and end; raw tool output and attachments
-are not copied. The new assistant is instructed to verify the workspace before
-continuing. The original chat remains available through `/resume`.
+## Language servers in this fork
 
-Handoff uses the same new-session settings as `/new`. If summary generation fails,
-the current chat stays open. If you switch chats, send another turn, or leave new
-input in the composer while it is being generated, no automatic transfer occurs.
-Handoff is currently unavailable for cloud conversations, like `/recap`.
+Install the language server separately, then add a named entry to `config.toml`.
+Set `command` to the executable and its arguments, `language_id` to the
+identifier expected by the server, and `extensions` to the file extensions it
+handles. For example:
 
-## Session continuity extensions
+```toml
+[language_servers.rust]
+command = ["rust-analyzer"]
+language_id = "rust"
+extensions = ["rs"]
+diagnostics_on_edit = true
+```
 
-This development build adds `/checks`, `/context`, `/timeline`, `/compact N`,
-durable structured `/handoff`, and explicitly configured language servers.
-See [session continuity implementation](session-continuity-implementation.md)
-for configuration examples, persistence behavior and current limits.
+Set `diagnostics_on_edit` to `true` to request diagnostics after successful
+`apply_patch` edits to matching files. The setting defaults to `false`.
+See [Session continuity](session-continuity-implementation.md#language-server-requests)
+for supported requests and limits.
