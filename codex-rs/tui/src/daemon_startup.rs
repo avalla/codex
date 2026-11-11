@@ -17,6 +17,28 @@ use std::collections::BTreeMap;
 pub(super) const FAILURE_HINT: &str = "To work without the background server, rerun the same command with --no-daemon (including resume or fork and its arguments).";
 pub(super) const WSL_DRVFS_EXCLUSION: &str = "a Windows-mounted WSL CODEX_HOME (DrvFS/9p)";
 pub(super) const GATEWAY_SIGN_IN_EXCLUSION: &str = "custom provider or gateway sign-in";
+pub(super) const CLM_EXCLUSION: &str = "CLM requires this build's embedded server";
+
+/// Managed daemons are downloaded upstream binaries and do not implement this fork's CLM.
+/// Honor the effective config (including file settings), without redirecting explicit servers.
+pub(super) fn use_embedded_for_clm(
+    target: &mut AppServerTarget,
+    config: &Config,
+    implicit_connection: bool,
+) -> bool {
+    if implicit_connection
+        && config.features.enabled(Feature::Clm)
+        && matches!(
+            target,
+            AppServerTarget::Embedded | AppServerTarget::LocalDaemon { .. }
+        )
+    {
+        *target = AppServerTarget::Embedded;
+        true
+    } else {
+        false
+    }
+}
 
 /// Returns whether `codex_home` is on a Windows-mounted WSL filesystem.
 pub fn uses_wsl_drvfs(codex_home: &std::path::Path) -> bool {

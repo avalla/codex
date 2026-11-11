@@ -309,6 +309,43 @@ async fn run_code_mode_turn_with_builder(
     Ok((test, second_mock))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clm_tools_are_discoverable_and_callable_in_code_mode_only() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let code = r#"
+const names = ALL_TOOLS.map(tool => tool.name);
+for (const name of ["context_notes", "context_history", "get_context_remaining"]) {
+    if (!names.includes(name)) throw new Error(`Missing CLM tool: ${name}`);
+}
+const marker = "CLM smoke test: marker 7391";
+await tools.context_notes({text: marker});
+const notes = await tools.context_notes({});
+if (notes.text !== marker) throw new Error("CLM notebook did not round-trip");
+const remaining = await tools.get_context_remaining({});
+if (!(remaining.tokens_left === null || remaining.tokens_left >= 0)) {
+    throw new Error("Invalid context budget");
+}
+text("CLM code mode smoke test passed");
+"#;
+    let (_test, follow_up) = run_code_mode_turn_with_config(
+        &server,
+        "Check CLM tools without rolling over the context.",
+        code,
+        |config| {
+            config.features.enable(Feature::Clm).unwrap();
+            config.features.enable(Feature::CodeModeOnly).unwrap();
+            config.features.disable(Feature::TokenBudget).unwrap();
+        },
+    )
+    .await?;
+    assert_eq!(
+        custom_tool_output_last_non_empty_text(&follow_up.single_request(), "call-1").as_deref(),
+        Some("CLM code mode smoke test passed")
+    );
+    Ok(())
+}
+
 fn code_mode_test_builder(disabled_features: &'static [Feature]) -> TestCodexBuilder {
     test_codex()
         .with_model("test-gpt-5.1-codex")

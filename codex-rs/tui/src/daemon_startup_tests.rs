@@ -44,6 +44,47 @@ fn feature_overrides_allow_daemon_without_allowing_arbitrary_config() {
     }
 }
 
+#[tokio::test]
+async fn clm_file_config_uses_fork_server_without_redirecting_explicit_connections()
+-> color_eyre::Result<()> {
+    let home = TempDir::new()?;
+    std::fs::write(home.path().join("config.toml"), "[features]\nclm = true\n")?;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    assert!(config.features.enabled(Feature::Clm));
+    let endpoint = RemoteAppServerEndpoint::WebSocket {
+        websocket_url: "ws://127.0.0.1:12345".to_string(),
+        auth_token: None,
+    };
+    for enabled in [true, false] {
+        config.features.set_enabled(Feature::Clm, enabled)?;
+        for implicit in [true, false] {
+            for remote in [true, false] {
+                let mut target = if remote {
+                    AppServerTarget::Remote {
+                        endpoint: endpoint.clone(),
+                    }
+                } else {
+                    AppServerTarget::LocalDaemon {
+                        endpoint: endpoint.clone(),
+                        allow_embedded_fallback: false,
+                    }
+                };
+                let expected = enabled && implicit && !remote;
+                assert_eq!(
+                    daemon_startup::use_embedded_for_clm(&mut target, &config, implicit),
+                    expected
+                );
+                assert_eq!(matches!(target, AppServerTarget::Embedded), expected);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn daemon_launch_telemetry_records_once_on_connection_update_or_early_return() {
     for mode in [Some("in_process"), Some("update_requested"), None] {
