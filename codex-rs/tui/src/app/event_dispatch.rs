@@ -416,6 +416,7 @@ impl App {
                 if !thread.ephemeral
                     && !self.agents_overview.removed_threads.contains(&thread_id)
                     && !self.agents_overview.threads.get(&thread_id).is_some_and(Option::is_some) {
+                    self.agents_overview.search_matches.remove(&thread_id);
                     self.agents_overview.threads.insert(thread_id, Some(thread));
                     self.agents_overview.refresh_thread_ids.insert(thread_id);
                 }
@@ -1059,8 +1060,8 @@ impl App {
                 tui.clear_pending_history_lines();
                 let switched_tab = self.conversation_frame.chat_strip.is_some()
                     && self.active_side_parent_thread_id().is_some()
-                    && self.conversation_frame.sidebar_input.is_some_and(|(_, painted_chat, _)| {
-                        painted_chat != self.current_displayed_thread_id()
+                    && self.conversation_frame.sidebar_input.is_some_and(|painted| {
+                        painted.selected_chat != self.current_displayed_thread_id()
                     });
                 if self.conversation_frame.chooser_area().is_none()
                     && self.chooser_focus().is_none()
@@ -3206,6 +3207,10 @@ impl App {
                 }
             }
             AppEvent::OpenAgentsOverview => self.open_agents_overview(app_server),
+            AppEvent::SearchAgentsOverview(id, limit) => self.search_agents_overview(app_server.request_handle(), id, limit),
+            AppEvent::AgentsOverviewSearchPage { id, rows, cursor, ok } => {
+                self.apply_agents_overview_search_page(id, rows, cursor, ok);
+            }
             AppEvent::ShowMoreAgentsOverview => self.show_more_agents_overview(app_server),
             AppEvent::RefreshViewedThread { backend_id, thread_id, revision } => {
                 if app_server.backend_id() == backend_id {
@@ -3439,16 +3444,21 @@ impl App {
                 }
             }
             AppEvent::SavedSideChatsLoaded { backend_id, parent, request, result } => {
-                let visible = self.current_displayed_thread_id() == Some(parent);
+                use crate::app_event::SavedSideChatData;
+                use crate::sidebar_chooser::Discovery;
                 if let Some(pane) = self.sidebars.get_mut(&Some(parent))
-                    && pane.saved_chats_request == Some(request)
+                    && pane.discovery.request() == Some(request)
                 {
-                    pane.set_saved_chats_request(/*request*/ None);
-                    if backend_id == app_server.backend_id() {
-                        match result {
-                            Ok(chats) => pane.update_saved_chats(chats),
-                            Err(error) if visible => self.chat_widget.add_error_message(error),
-                            Err(error) => tracing::warn!(%parent, %error),
+                    match result {
+                        _ if backend_id != app_server.backend_id() => pane.set_discovery(Discovery::Idle),
+                        Err(error) => pane.set_discovery(Discovery::Failed(error)),
+                        Ok(SavedSideChatData::LatestPrompts(prompts)) => {
+                            pane.latest_prompts = prompts;
+                            pane.set_discovery(Discovery::Idle);
+                        }
+                        Ok(SavedSideChatData::Choices(chats)) => {
+                            pane.update_saved_chats(chats);
+                            self.refresh_visible_side_chat_prompts(tui, app_server, parent, request);
                         }
                     }
                     tui.frame_requester().schedule_frame();

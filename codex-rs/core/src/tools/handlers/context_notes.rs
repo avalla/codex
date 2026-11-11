@@ -1,8 +1,11 @@
 use crate::clm::{ContextNotes, MAX_NOTES_BYTES};
 use crate::context::ContextualUserFragment;
 use crate::function_tool::FunctionCallError;
-use crate::tools::context::{FunctionToolOutput, ToolInvocation, ToolPayload, boxed_tool_output};
+use crate::tools::context::{
+    FunctionToolOutput, ToolInvocation, ToolOutput, ToolPayload, boxed_tool_output,
+};
 use crate::tools::registry::{CoreToolRuntime, ToolExecutor};
+use codex_protocol::models::ResponseInputItem;
 use codex_thread_store::{
     ItemSortKey, ListItemsParams, ListItemsPosition, SearchThreadOccurrencesParams, SortDirection,
 };
@@ -14,13 +17,39 @@ use std::collections::BTreeMap;
 pub(crate) struct ContextNotesHandler;
 pub(crate) struct ContextHistoryHandler;
 
-fn spec(name: &str, description: &str, properties: BTreeMap<String, JsonSchema>) -> ToolSpec {
+struct ClmOutput(serde_json::Value);
+
+impl ToolOutput for ClmOutput {
+    fn log_output(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        FunctionToolOutput::from_text(self.0.to_string(), Some(true))
+            .to_response_item(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
+        self.0.clone()
+    }
+}
+
+fn spec(
+    name: &str,
+    description: &str,
+    properties: BTreeMap<String, JsonSchema>,
+    output_schema: Option<serde_json::Value>,
+) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: name.into(),
         description: description.into(),
         strict: false,
         defer_loading: None,
-        output_schema: None,
+        output_schema: output_schema.map(Into::into),
         parameters: JsonSchema::object(properties, None, Some(false.into())),
     })
 }
@@ -62,6 +91,16 @@ impl ToolExecutor<ToolInvocation> for ContextNotesHandler {
                 "text".into(),
                 JsonSchema::string(Some("Complete notebook replacement; omit to read.".into())),
             )]),
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "bytes": {"type": "integer"},
+                    "max_bytes": {"type": "integer"}
+                },
+                "required": ["text", "bytes", "max_bytes"],
+                "additionalProperties": false
+            })),
         )
     }
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -92,9 +131,8 @@ impl ToolExecutor<ToolInvocation> for ContextNotesHandler {
                     .and_then(|item| crate::clm::notes_text(&item.item))
                     .unwrap_or_default()
             };
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                json!({"text":text,"bytes":text.len(),"max_bytes":MAX_NOTES_BYTES}).to_string(),
-                Some(true),
+            Ok(boxed_tool_output(ClmOutput(
+                json!({"text":text,"bytes":text.len(),"max_bytes":MAX_NOTES_BYTES}),
             )))
         })
     }
@@ -151,6 +189,7 @@ impl ToolExecutor<ToolInvocation> for ContextHistoryHandler {
                     )),
                 ),
             ]),
+            None,
         )
     }
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -230,10 +269,7 @@ impl ToolExecutor<ToolInvocation> for ContextHistoryHandler {
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!("History unavailable: {error}"))
             })?;
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                result.to_string(),
-                Some(true),
-            )))
+            Ok(boxed_tool_output(ClmOutput(result)))
         })
     }
 }

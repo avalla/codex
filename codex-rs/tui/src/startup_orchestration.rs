@@ -568,6 +568,9 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
+    if daemon_startup::use_embedded_for_clm(&mut app_server_target, &config, implicit_connection) {
+        daemon_exclusion = Some(daemon_startup::CLM_EXCLUSION);
+    }
     let auto_start_daemon = cfg!(any(unix, windows))
         && (cli.agents_overview || config.features.enabled(Feature::DaemonAutoStart))
         && implicit_connection
